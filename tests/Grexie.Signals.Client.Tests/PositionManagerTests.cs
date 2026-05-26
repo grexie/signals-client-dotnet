@@ -31,7 +31,7 @@ public sealed class PositionManagerTests
         Assert.Single(buy);
         Assert.Equal("opening", buy[0].Reason);
         Assert.Equal(Side.Buy, buy[0].Side);
-        Assert.Equal(0.10, buy[0].TargetSize, 9);
+        Assert.Equal(0.10, OrderBudgetCost(buy[0]), 9);
 
         var sell = manager.HandleSignal(new Signal
         {
@@ -49,7 +49,7 @@ public sealed class PositionManagerTests
         Assert.Equal(Side.Sell, sell[0].Side);
         Assert.Equal("flip", sell[0].Reason);
         Assert.Equal(0, sell[0].TargetSize, 9);
-        Assert.Equal(-0.10, sell[0].SizeDelta, 9);
+        Assert.Equal(-buy[0].TargetSize, sell[0].SizeDelta, 9);
 
         var openShort = manager.HandleSignal(new Signal
         {
@@ -68,7 +68,7 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
-    public void ScalesMinOrderDeltaByPositionSize()
+    public void ConfidenceIsAllocationWeight()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
@@ -78,7 +78,7 @@ public sealed class PositionManagerTests
         });
         manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DOGE-USDT-SWAP" });
 
-        Assert.Empty(manager.HandleSignal(new Signal
+        var orders = manager.HandleSignal(new Signal
         {
             Venue = "okx",
             Instrument = "DOGE-USDT-SWAP",
@@ -87,18 +87,47 @@ public sealed class PositionManagerTests
             TakeProfit = 0.02,
             StopLoss = 0.004,
             Price = 0.2
-        }));
+        });
 
-        Assert.Single(manager.HandleSignal(new Signal
+        Assert.Single(orders);
+        Assert.Equal(0.10, OrderBudgetCost(orders[0]), 9);
+    }
+
+    [Fact]
+    public void QuantizesEmittedTargetSizeToExecutableLots()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 0.50,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Equity = 1000, Available = 1000 });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata
         {
             Venue = "okx",
-            Instrument = "DOGE-USDT-SWAP",
+            Instrument = "BTC-USDT-SWAP",
+            SettlementCurrency = "USDT",
+            LotSize = 1,
+            MinSize = 1,
+            TickSize = 0.1
+        });
+
+        var orders = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
             Side = Side.Buy,
-            Confidence = 0.25,
+            Confidence = 0.15,
             TakeProfit = 0.02,
             StopLoss = 0.004,
-            Price = 0.2
-        }));
+            Price = 333
+        });
+
+        Assert.Single(orders);
+        Assert.Equal(1, orders[0].Quantity, 9);
+        Assert.Equal(0.333, orders[0].SizeDelta, 9);
+        Assert.Equal(0.333, orders[0].TargetSize, 9);
     }
 
     [Fact]
@@ -333,7 +362,7 @@ public sealed class PositionManagerTests
         Assert.Single(reductions);
         Assert.Equal("BTC-USDT-SWAP", reductions[0].Instrument);
         Assert.Equal(Side.Sell, reductions[0].Side);
-        Assert.Equal(0.10, reductions[0].TargetSize, 9);
+        Assert.Equal(0.10 / (1 + reductions[0].Leverage * reductions[0].FeeRate), reductions[0].TargetSize, 9);
 
         var openings = manager.HandleSignal(new Signal
         {
@@ -375,7 +404,9 @@ public sealed class PositionManagerTests
         });
 
         Assert.Single(orders);
-        Assert.Equal(0.05, orders[0].SizeDelta, 9);
-        Assert.Equal(0.05, orders[0].TargetSize, 9);
+        Assert.True(OrderBudgetCost(orders[0]) <= 0.05 + 1e-9);
+        Assert.True(orders[0].SizeDelta < 0.05);
     }
+
+    private static double OrderBudgetCost(Order order) => Math.Abs(order.SizeDelta) + Math.Max(0, order.EstimatedFee);
 }

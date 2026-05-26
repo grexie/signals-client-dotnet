@@ -219,6 +219,8 @@ public sealed class SignalsClient : IAsyncDisposable
 /// <summary>Protocol event parser.</summary>
 public static class SignalsEventParser
 {
+    private static readonly JsonSerializerOptions ParserOptions = JsonOptions.Create();
+
     /// <summary>Parse one websocket JSON message into a typed event.</summary>
     public static SignalsEvent Parse(string rawJson)
     {
@@ -240,7 +242,7 @@ public static class SignalsEventParser
     private static SignalEvent ParseSignalEvent(JsonElement root)
     {
         var signal = root.TryGetProperty("signal", out var signalElement)
-            ? signalElement.Deserialize<Signal>(JsonOptions.Create()) ?? new Signal()
+            ? signalElement.Deserialize<Signal>(ParserOptions) ?? new Signal()
             : new Signal();
         signal.Venue = string.IsNullOrWhiteSpace(signal.Venue) ? root.GetStringOrNull("venue") ?? string.Empty : signal.Venue;
         signal.Instrument = string.IsNullOrWhiteSpace(signal.Instrument) ? root.GetStringOrNull("instrument") ?? string.Empty : signal.Instrument;
@@ -254,7 +256,8 @@ internal static class JsonOptions
     public static JsonSerializerOptions Create() => new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 }
 

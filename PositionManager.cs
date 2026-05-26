@@ -91,7 +91,7 @@ public sealed class PositionManager
         var delta = -position.Size;
         var order = OrderForDelta(key, position, delta, 0, 0, "closing", position.Confidence);
         if (!OrderMeetsInstrumentMinimum(order)) return Array.Empty<Order>();
-        ApplyDelta(key, delta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key));
+        ApplyDelta(key, order.SizeDelta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key));
         return new[] { order };
     }
 
@@ -120,7 +120,7 @@ public sealed class PositionManager
         if (_config.MinExpectedEdge > 0 && edge < _config.MinExpectedEdge) return Array.Empty<Order>();
 
         var now = signal.Timestamp ?? DateTimeOffset.UtcNow;
-        var targetSize = targetSign * _config.PositionSize * targetConfidence;
+        var targetSize = targetSign * _config.PositionSize;
         var minDelta = EffectiveMinOrderDelta();
         if (!_positions.TryGetValue(key, out var position) || Math.Abs(position.Size) <= 1e-9)
         {
@@ -166,7 +166,6 @@ public sealed class PositionManager
     {
         var weights = new Dictionary<string, double>();
         var sides = new Dictionary<string, double>();
-        var totalWeight = 0.0;
         foreach (var (key, position) in _positions)
         {
             var hasOverride = sideOverrides.ContainsKey(key);
@@ -175,15 +174,15 @@ public sealed class PositionManager
             var side = sideOverrides.TryGetValue(key, out var overrideSide) ? overrideSide : Sign(position.Size);
             weights[key] = weight;
             sides[key] = side;
-            if (weight > 1e-9 && side != 0) totalWeight += weight;
         }
-        var usedBudget = Math.Min(_config.PositionSize, totalWeight);
+        var keys = _positions.Keys.OrderBy(key => key).ToArray();
+        var targets = AllocateTargetSizes(keys, weights, sides, contexts);
         var reductions = new List<RebalanceCandidate>();
         var openings = new List<RebalanceCandidate>();
-        foreach (var key in _positions.Keys.OrderBy(key => key).ToArray())
+        foreach (var key in keys)
         {
             var position = _positions[key];
-            var targetSize = totalWeight > 0 ? sides[key] * usedBudget * weights[key] / totalWeight : 0;
+            var targetSize = targets.GetValueOrDefault(key);
             var delta = targetSize - position.Size;
             var isFlip = IsFlipTarget(position.Size, targetSize);
             if (isFlip) delta = -position.Size;
@@ -213,6 +212,71 @@ public sealed class PositionManager
         return reductions.Count > 0 ? MaterializeRebalanceOrders(reductions, false) : MaterializeRebalanceOrders(openings, true);
     }
 
+    private Dictionary<string, double> AllocateTargetSizes(
+        IReadOnlyList<string> keys,
+        IReadOnlyDictionary<string, double> weights,
+        IReadOnlyDictionary<string, double> sides,
+        IReadOnlyDictionary<string, SignalContext> contexts)
+    {
+        var targets = new Dictionary<string, double>();
+        if (_config.PositionSize <= 0) return targets;
+        var active = keys.Where(key => weights.GetValueOrDefault(key) > 1e-9 && sides.GetValueOrDefault(key) != 0).ToHashSet();
+        while (active.Count > 0)
+        {
+            var totalWeight = active.Sum(key => weights.GetValueOrDefault(key));
+            if (totalWeight <= 1e-9) break;
+            var dropped = "";
+            var droppedWeight = double.PositiveInfinity;
+            foreach (var key in keys)
+            {
+                if (!active.Contains(key) || !_positions.TryGetValue(key, out var position)) continue;
+                var desiredBudget = _config.PositionSize * weights.GetValueOrDefault(key) / totalWeight;
+                if (ExecutableAllocationForBudget(key, position, desiredBudget, contexts.GetValueOrDefault(key)).Margin > 1e-9) continue;
+                var weight = weights.GetValueOrDefault(key);
+                if (weight < droppedWeight || (Math.Abs(weight - droppedWeight) <= 1e-9 && (dropped.Length == 0 || string.CompareOrdinal(key, dropped) < 0)))
+                {
+                    dropped = key;
+                    droppedWeight = weight;
+                }
+            }
+            if (dropped.Length == 0) break;
+            active.Remove(dropped);
+        }
+        if (active.Count == 0) return targets;
+
+        var totalActiveWeight = active.Sum(key => weights.GetValueOrDefault(key));
+        if (totalActiveWeight <= 1e-9) return targets;
+        var allocated = 0.0;
+        foreach (var key in keys)
+        {
+            if (!active.Contains(key) || !_positions.TryGetValue(key, out var position)) continue;
+            var desiredBudget = _config.PositionSize * weights.GetValueOrDefault(key) / totalActiveWeight;
+            var executable = ExecutableAllocationForBudget(key, position, desiredBudget, contexts.GetValueOrDefault(key));
+            if (executable.Margin <= 1e-9) continue;
+            targets[key] = sides.GetValueOrDefault(key) * executable.Margin;
+            allocated += executable.Margin + executable.Fee;
+        }
+
+        var free = _config.PositionSize - allocated;
+        if (free <= 1e-9) return targets;
+        foreach (var key in keys.OrderByDescending(key => weights.GetValueOrDefault(key)).ThenBy(key => key))
+        {
+            if (!active.Contains(key) || free <= 1e-9 || !_positions.TryGetValue(key, out var position)) continue;
+            var step = ExecutableLotStepCost(key, position, contexts.GetValueOrDefault(key));
+            var stepCost = step.Margin + step.Fee;
+            if (stepCost <= 1e-9)
+            {
+                targets[key] = targets.GetValueOrDefault(key) + sides.GetValueOrDefault(key) * free;
+                break;
+            }
+            var steps = Math.Floor((free + 1e-9) / stepCost);
+            if (steps <= 0) continue;
+            targets[key] = targets.GetValueOrDefault(key) + sides.GetValueOrDefault(key) * steps * step.Margin;
+            free -= steps * stepCost;
+        }
+        return targets;
+    }
+
     private IReadOnlyList<Order> MaterializeRebalanceOrders(IReadOnlyList<RebalanceCandidate> candidates, bool capOpenings)
     {
         var orders = new List<Order>();
@@ -230,7 +294,12 @@ public sealed class PositionManager
                     if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
                     continue;
                 }
-                if (Math.Abs(delta) > available) delta = Sign(delta) * available;
+                delta = CapOpeningDeltaToBudget(candidate.Key, candidate.Position, delta, candidate.Context, available);
+                if (Math.Abs(delta) <= 1e-9)
+                {
+                    if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
+                    continue;
+                }
             }
             var order = OrderForDelta(candidate.Key, candidate.Position, delta, candidate.Context.ExpectedEdge, candidate.Context.Score, candidate.Reason, candidate.Context.Confidence);
             order.TakeProfit = candidate.Context.TakeProfit;
@@ -243,9 +312,9 @@ public sealed class PositionManager
             orders.Add(order);
             if (capOpenings && !IsExposureReduction(order.PreviousSize, order.TargetSize))
             {
-                openingExposureByCurrency[order.SettlementCurrency] = openingExposureByCurrency.GetValueOrDefault(order.SettlementCurrency) + Math.Abs(order.SizeDelta);
+                openingExposureByCurrency[order.SettlementCurrency] = openingExposureByCurrency.GetValueOrDefault(order.SettlementCurrency) + OrderBudgetCost(order);
             }
-            ApplyDelta(candidate.Key, delta, PositiveOr(candidate.Position.LastPrice, candidate.Position.EntryPrice), TakerFeeRate(candidate.Key));
+            ApplyDelta(candidate.Key, order.SizeDelta, PositiveOr(candidate.Position.LastPrice, candidate.Position.EntryPrice), TakerFeeRate(candidate.Key));
             if (_positions.TryGetValue(candidate.Key, out var updated)) updated.Confidence = candidate.Weight;
         }
         return orders;
@@ -261,6 +330,51 @@ public sealed class PositionManager
         return Math.Max(0, asset.Available / equity);
     }
 
+    private ExecutableAllocation ExecutableAllocationForBudget(string key, Position position, double budget, SignalContext context)
+    {
+        if (budget <= 1e-9) return default;
+        var metadata = _instruments.Instrument(position.Venue, position.Instrument);
+        var asset = _assets.Asset(metadata.SettlementCurrency);
+        var equity = PositiveOr(asset?.Equity ?? 0, (asset?.Cash ?? 0) + (asset?.Used ?? 0), 1);
+        var price = RoundToTick(PositiveOr(position.LastPrice, position.EntryPrice), metadata.TickSize);
+        var leverage = SelectLeverage(key, context.Confidence > 0 ? context.Confidence : position.Confidence, context.ExpectedEdge, context.Score);
+        if (price <= 0 || equity <= 0 || leverage <= 0) return default;
+        var feeRate = TakerFeeRate(key);
+        var feeMultiplier = Math.Max(1 + leverage * feeRate, 1);
+        var maxMargin = budget / feeMultiplier;
+        var quantity = RoundDownToStep(maxMargin * equity * leverage / price, metadata.LotSize);
+        if (quantity <= 1e-9) return default;
+        if (metadata.MinSize > 0 && quantity < metadata.MinSize) return default;
+        var margin = quantity * price / (equity * leverage);
+        var fee = quantity * price * feeRate / equity;
+        if (margin + fee > budget + 1e-9) return default;
+        return new ExecutableAllocation(margin, fee);
+    }
+
+    private ExecutableAllocation ExecutableLotStepCost(string key, Position position, SignalContext context)
+    {
+        var metadata = _instruments.Instrument(position.Venue, position.Instrument);
+        if (metadata.LotSize <= 0) return default;
+        var asset = _assets.Asset(metadata.SettlementCurrency);
+        var equity = PositiveOr(asset?.Equity ?? 0, (asset?.Cash ?? 0) + (asset?.Used ?? 0), 1);
+        var price = RoundToTick(PositiveOr(position.LastPrice, position.EntryPrice), metadata.TickSize);
+        var leverage = SelectLeverage(key, context.Confidence > 0 ? context.Confidence : position.Confidence, context.ExpectedEdge, context.Score);
+        if (price <= 0 || equity <= 0 || leverage <= 0) return default;
+        return new ExecutableAllocation(
+            metadata.LotSize * price / (equity * leverage),
+            metadata.LotSize * price * TakerFeeRate(key) / equity);
+    }
+
+    private double CapOpeningDeltaToBudget(string key, Position position, double delta, SignalContext context, double budget)
+    {
+        if (Math.Abs(delta) <= 1e-9 || budget <= 1e-9) return 0;
+        var executable = ExecutableAllocationForBudget(key, position, budget, context);
+        if (executable.Margin <= 1e-9) return 0;
+        if (executable.Margin < Math.Abs(delta)) return Sign(delta) * executable.Margin;
+        var order = OrderForDelta(key, position, delta, context.ExpectedEdge, context.Score, "budget-check", context.Confidence);
+        return OrderBudgetCost(order) > budget + 1e-9 ? Sign(delta) * executable.Margin : delta;
+    }
+
     private Order OrderForDelta(string key, Position position, double delta, double edge, double score, string reason, double confidence)
     {
         var feeRate = TakerFeeRate(key);
@@ -269,24 +383,29 @@ public sealed class PositionManager
         var leverage = SelectLeverage(key, confidence, edge, score);
         var equity = PositiveOr(asset?.Equity ?? 0, (asset?.Cash ?? 0) + (asset?.Used ?? 0), 1);
         var price = RoundToTick(PositiveOr(position.LastPrice, position.EntryPrice), metadata.TickSize);
-        var notional = Math.Abs(delta) * equity * leverage;
+        var requestedAbsDelta = Math.Abs(delta);
+        var notional = requestedAbsDelta * equity * leverage;
         var quantity = price > 0 ? RoundDownToStep(notional / price, metadata.LotSize) : 0;
         notional = quantity * price;
+        var executableAbsDelta = requestedAbsDelta;
+        if (equity > 0 && leverage > 0 && price > 0) executableAbsDelta = notional / (equity * leverage);
+        if (executableAbsDelta > requestedAbsDelta) executableAbsDelta = requestedAbsDelta;
+        var executableDelta = Sign(delta) * executableAbsDelta;
         return new Order
         {
             Venue = position.Venue,
             Instrument = position.Instrument,
             Side = delta < 0 ? Side.Sell : Side.Buy,
             Reason = reason,
-            SizeDelta = delta,
+            SizeDelta = executableDelta,
             PreviousSize = position.Size,
-            TargetSize = position.Size + delta,
+            TargetSize = position.Size + executableDelta,
             Price = price,
             Confidence = confidence,
             Score = score,
             ExpectedEdge = edge,
             FeeRate = feeRate,
-            EstimatedFee = Math.Abs(delta) * feeRate,
+            EstimatedFee = FeeExposureForNotional(notional, feeRate, equity),
             EstimatedFeeValue = notional * feeRate,
             Quantity = quantity,
             Notional = notional,
@@ -309,7 +428,7 @@ public sealed class PositionManager
                 position.EntryPrice = nextAbs > 0 && Math.Abs(position.Size) > 1e-9 && position.EntryPrice > 0 ? (position.EntryPrice * Math.Abs(position.Size) + price * Math.Abs(delta)) / nextAbs : price;
                 position.LastPrice = price;
             }
-            var fee = Math.Abs(delta) * feeRate;
+            var fee = FeeExposureForMargin(Math.Abs(delta), PositiveOr(position.Leverage, MinLeverage(key), 1), feeRate);
             position.Fees += fee;
             position.RealizedPnL -= fee;
             position.Size += delta;
@@ -318,7 +437,7 @@ public sealed class PositionManager
         if (price > 0) position.LastPrice = price;
         var closing = Math.Min(Math.Abs(position.Size), Math.Abs(delta));
         var gross = position.PriceMove() * closing;
-        var feeClose = closing * feeRate;
+        var feeClose = FeeExposureForMargin(closing, PositiveOr(position.Leverage, MinLeverage(key), 1), feeRate);
         position.RealizedGross += gross;
         position.Fees += feeClose;
         position.RealizedPnL += gross - feeClose;
@@ -340,7 +459,7 @@ public sealed class PositionManager
         position.LastPrice = price;
         position.Confidence = 0;
         position.RealizedGross = 0;
-        position.Fees = remaining * feeRate;
+        position.Fees = FeeExposureForMargin(remaining, PositiveOr(position.Leverage, MinLeverage(key), 1), feeRate);
         position.RealizedPnL = -position.Fees;
     }
 
@@ -355,7 +474,7 @@ public sealed class PositionManager
         var metadataMax = parts.Length == 2 ? _instruments.Instrument(parts[0], parts[1]).MaxLeverage : 0;
         return metadataMax > 0 && configured > 0 ? Math.Min(configured, metadataMax) : configured;
     }
-    private static bool OrderMeetsInstrumentMinimum(Order order) => order.Reason is "closing" or "flip" || (order.MinSize <= 0 || order.Quantity >= order.MinSize);
+    private static bool OrderMeetsInstrumentMinimum(Order order) => order.Quantity > 0 && (order.Reason is "closing" or "flip" || order.MinSize <= 0 || order.Quantity >= order.MinSize);
     private double SelectLeverage(string key, double confidence, double edge, double score)
     {
         var min = MinLeverage(key);
@@ -377,11 +496,15 @@ public sealed class PositionManager
     private static double RoundToTick(double value, double tick) => value <= 0 || tick <= 0 ? value : Math.Round(value / tick) * tick;
     private static double ExpectedEdge(Signal signal) => Clamp01(signal.Confidence) * Math.Max(signal.TakeProfit, 0) - (1 - Clamp01(signal.Confidence)) * Math.Max(signal.StopLoss, 0);
     private static double FeeAdjustedExpectedEdge(Signal signal, double takerFeeRate) => ExpectedEdge(signal) - 2 * takerFeeRate;
+    private static double OrderBudgetCost(Order order) => Math.Abs(order.SizeDelta) + Math.Max(0, order.EstimatedFee);
+    private static double FeeExposureForNotional(double notional, double feeRate, double equity) => notional <= 0 || feeRate <= 0 || equity <= 0 ? 0 : notional * feeRate / equity;
+    private static double FeeExposureForMargin(double margin, double leverage, double feeRate) => margin <= 0 || leverage <= 0 || feeRate <= 0 ? 0 : margin * leverage * feeRate;
     private static string OrderReason(Position position, double targetSize) => Math.Abs(position.Size) <= 1e-9 ? "opening" : Math.Abs(targetSize) <= 1e-9 ? "closing" : Sign(position.Size) != Sign(targetSize) ? "flip" : "rebalance";
     private static bool IsFlipTarget(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && Math.Abs(targetSize) > 1e-9 && Sign(previousSize) != Sign(targetSize);
     private static bool IsExposureReduction(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && (Math.Abs(targetSize) <= 1e-9 || Sign(previousSize) != Sign(targetSize) || Math.Abs(targetSize) < Math.Abs(previousSize) - 1e-9);
     private static double BlendRisk(double current, double incoming, double gate) => current <= 0 ? incoming : incoming <= 0 ? current : current * (1 - Clamp01(gate)) + incoming * Clamp01(gate);
 
     private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss);
+    private readonly record struct ExecutableAllocation(double Margin, double Fee);
     private readonly record struct RebalanceCandidate(string Key, Position Position, double Delta, double Weight, SignalContext Context, string Reason);
 }
