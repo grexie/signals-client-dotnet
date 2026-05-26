@@ -10,7 +10,12 @@ namespace Grexie.Signals.Client;
 public readonly record struct SignalsWebSocketToken(string Value);
 
 /// <summary>Typed websocket client for Grexie Signals subscriptions.</summary>
-public sealed class SignalsClient : IAsyncDisposable
+public interface ISignalsEventSource
+{
+    IAsyncEnumerable<SignalsEvent> EventsAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class SignalsClient : IAsyncDisposable, ISignalsEventSource
 {
     private readonly Uri _uri;
     private readonly SignalsWebSocketToken _token;

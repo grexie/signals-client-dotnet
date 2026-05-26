@@ -30,6 +30,26 @@ public sealed record Signal
     public double StopLoss { get; set; }
     public double Score { get; set; }
     public IReadOnlyList<SignalComponent> Components { get; set; } = Array.Empty<SignalComponent>();
+    public string? ModelVariant { get; set; }
+    public string? ModelVersion { get; set; }
+    public string? PredictionMode { get; set; }
+    public string? ConfidenceMapping { get; set; }
+    public double UpProbability { get; set; }
+    public double DownProbability { get; set; }
+    public double DirectionalEdge { get; set; }
+    public double NormalizedEdge { get; set; }
+    public double ExpectedValue { get; set; }
+    public string? Regime { get; set; }
+    public double RegimeConfidence { get; set; }
+    public string? VolatilityState { get; set; }
+    public string? SqueezeState { get; set; }
+    public string? TrendState { get; set; }
+    public double AtrPercent { get; set; }
+    public double SignalTTL { get; set; }
+    public DateTimeOffset? GeneratedAt { get; set; }
+    public string? ArtifactID { get; set; }
+    public string? ArtifactVersion { get; set; }
+    public string? RejectedReason { get; set; }
     public DateTimeOffset? Timestamp { get; set; }
     public double Price { get; set; }
 }
@@ -175,6 +195,7 @@ public sealed record Order
     public double Score { get; init; }
     public double TakeProfit { get; set; }
     public double StopLoss { get; set; }
+    public bool ReduceOnly { get; init; }
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
     public long? SubscriptionId { get; set; }
     public bool Replay { get; set; }

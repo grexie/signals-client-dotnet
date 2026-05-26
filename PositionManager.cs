@@ -3,14 +3,14 @@ namespace Grexie.Signals.Client;
 /// <summary>In-memory, fee-aware production-style position manager.</summary>
 public sealed class PositionManager
 {
-    private readonly SignalsClient? _client;
+    private readonly ISignalsEventSource? _client;
     private readonly PositionManagerConfig _config;
     private readonly AssetManager _assets = new();
     private readonly InstrumentManager _instruments = new();
     private readonly Dictionary<string, Position> _positions = new();
     private readonly List<ClosedTrade> _closedTrades = new();
 
-    public PositionManager(SignalsClient? client = null, PositionManagerConfig? config = null)
+    public PositionManager(ISignalsEventSource? client = null, PositionManagerConfig? config = null)
     {
         _client = client;
         _config = Normalize(config ?? PositionManagerConfig.ProductionDefaults());
@@ -391,6 +391,7 @@ public sealed class PositionManager
         if (equity > 0 && leverage > 0 && price > 0) executableAbsDelta = notional / (equity * leverage);
         if (executableAbsDelta > requestedAbsDelta) executableAbsDelta = requestedAbsDelta;
         var executableDelta = Sign(delta) * executableAbsDelta;
+        var reduceOnly = IsExposureReduction(position.Size, position.Size + executableDelta);
         return new Order
         {
             Venue = position.Venue,
@@ -413,7 +414,8 @@ public sealed class PositionManager
             MinSize = metadata.MinSize,
             LotSize = metadata.LotSize,
             TickSize = metadata.TickSize,
-            Leverage = leverage
+            Leverage = leverage,
+            ReduceOnly = reduceOnly
         };
     }
 
