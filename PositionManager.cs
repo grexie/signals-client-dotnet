@@ -20,10 +20,8 @@ public sealed class PositionManager
     public async IAsyncEnumerable<Order> RunAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (_client is null) throw new InvalidOperationException("position manager has no SignalsClient");
-        while (!cancellationToken.IsCancellationRequested)
+        await foreach (var ev in _client.EventsAsync(cancellationToken).ConfigureAwait(false))
         {
-            var ev = await _client.ReceiveAsync(cancellationToken).ConfigureAwait(false);
-            if (ev is null) yield break;
             foreach (var order in HandleEvent(ev))
             {
                 yield return order;
@@ -100,6 +98,7 @@ public sealed class PositionManager
     public IReadOnlyList<Order> HandleEvent(SignalsEvent ev)
     {
         if (ev is not SignalEvent signalEvent) return Array.Empty<Order>();
+        if (signalEvent.Replay) return Array.Empty<Order>();
         var orders = HandleSignal(signalEvent.Signal).ToArray();
         foreach (var order in orders)
         {
@@ -111,6 +110,8 @@ public sealed class PositionManager
 
     public IReadOnlyList<Order> HandleSignal(Signal signal)
     {
+        if (string.IsNullOrWhiteSpace(signal.Venue) || string.IsNullOrWhiteSpace(signal.Instrument)) return Array.Empty<Order>();
+        if (!_instruments.ContainsInstrument(signal.Venue, signal.Instrument)) return Array.Empty<Order>();
         var key = Key(signal.Venue, signal.Instrument);
         var targetSign = SideSign(signal.Side);
         var targetConfidence = Clamp01(signal.Confidence);

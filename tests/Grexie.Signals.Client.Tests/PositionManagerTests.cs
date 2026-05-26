@@ -14,6 +14,7 @@ public sealed class PositionManagerTests
             MinOrderDelta = 0.20,
             MaxLeverage = 5
         });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
 
         var buy = manager.HandleSignal(new Signal
         {
@@ -59,6 +60,7 @@ public sealed class PositionManagerTests
             MinExpectedEdge = 0,
             MinOrderDelta = 0.20
         });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DOGE-USDT-SWAP" });
 
         Assert.Empty(manager.HandleSignal(new Signal
         {
@@ -81,6 +83,98 @@ public sealed class PositionManagerTests
             StopLoss = 0.004,
             Price = 0.2
         }));
+    }
+
+    [Fact]
+    public void IgnoresUnconfiguredSignals()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 0.10,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+
+        var signal = new Signal
+        {
+            Venue = "okx",
+            Instrument = "SOL-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        };
+        Assert.Empty(manager.HandleSignal(signal));
+        Assert.Empty(manager.Positions());
+
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "SOL-USDT-SWAP" });
+        Assert.Single(manager.HandleSignal(signal));
+    }
+
+    [Fact]
+    public void IgnoresReplaySignalEvents()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 0.10,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        var signal = new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        };
+        var replay = new SignalEvent(3, "okx", "BTC-USDT-SWAP", signal, null, true, null);
+        Assert.Empty(manager.HandleEvent(replay));
+        Assert.Empty(manager.Positions());
+
+        var live = replay with { Replay = false };
+        Assert.Single(manager.HandleEvent(live));
+    }
+
+    [Fact]
+    public void LeverageAdaptsWithConfidenceEdgeAndScoreInsideCaps()
+    {
+        static double LeverageFor(string instrument, double confidence, double takeProfit, double score)
+        {
+            var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+            {
+                PositionSize = 1,
+                MinExpectedEdge = 0,
+                MinOrderDelta = 0,
+                MinLeverage = 1,
+                MaxLeverage = 5
+            });
+            manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = instrument });
+            var orders = manager.HandleSignal(new Signal
+            {
+                Venue = "okx",
+                Instrument = instrument,
+                Side = Side.Buy,
+                Confidence = confidence,
+                TakeProfit = takeProfit,
+                StopLoss = 0,
+                Score = score,
+                Price = 100
+            });
+            return orders[0].Leverage;
+        }
+
+        var low = LeverageFor("LOW-USDT-SWAP", 0.2, 0, 0);
+        var scored = LeverageFor("SCORE-USDT-SWAP", 0.2, 0, 1);
+        var high = LeverageFor("HIGH-USDT-SWAP", 1, 0.02, 1);
+        Assert.True(low >= 1);
+        Assert.True(high <= 5);
+        Assert.True(scored > low);
+        Assert.Equal(5, high, 9);
     }
 
     [Fact]

@@ -101,6 +101,7 @@ public sealed class InstrumentManager
     }
 
     public InstrumentMetadata Instrument(string venue, string instrument) => _instruments.GetValueOrDefault($"{venue}:{instrument}") ?? new InstrumentMetadata { Venue = venue, Instrument = instrument };
+    public bool ContainsInstrument(string venue, string instrument) => _instruments.ContainsKey($"{venue}:{instrument}");
     public IReadOnlyList<InstrumentMetadata> Instruments() => _instruments.Values.OrderBy(i => i.Venue).ThenBy(i => i.Instrument).ToArray();
 }
 

@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 
 namespace Grexie.Signals.Client;
 
@@ -15,6 +16,13 @@ public sealed class SignalsClient : IAsyncDisposable
     private readonly SignalsWebSocketToken _token;
     private readonly ClientWebSocket _socket = new();
     private readonly JsonSerializerOptions _json = JsonOptions.Create();
+    private readonly Channel<SignalsEvent> _receiveQueue = Channel.CreateUnbounded<SignalsEvent>();
+    private readonly List<Channel<SignalsEvent>> _subscribers = new();
+    private readonly object _subscriberLock = new();
+    private CancellationTokenSource? _readLoopCts;
+    private Task? _readLoopTask;
+    private bool _streamsCompleted;
+    private Exception? _completionError;
 
     /// <summary>Create a client using the production websocket endpoint.</summary>
     public SignalsClient(SignalsWebSocketToken token)
@@ -34,9 +42,13 @@ public sealed class SignalsClient : IAsyncDisposable
     }
 
     /// <summary>Open the websocket connection.</summary>
-    public Task ConnectAsync(CancellationToken cancellationToken = default)
+    public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
-        return _socket.ConnectAsync(_uri, cancellationToken);
+        await _socket.ConnectAsync(_uri, cancellationToken).ConfigureAwait(false);
+        _streamsCompleted = false;
+        _completionError = null;
+        _readLoopCts = new CancellationTokenSource();
+        _readLoopTask = Task.Run(() => ReadLoopAsync(_readLoopCts.Token));
     }
 
     /// <summary>Subscribe to one venue/instrument pair.</summary>
@@ -60,6 +72,106 @@ public sealed class SignalsClient : IAsyncDisposable
     /// <summary>Receive the next typed websocket event.</summary>
     public async Task<SignalsEvent?> ReceiveAsync(CancellationToken cancellationToken = default)
     {
+        try
+        {
+            return await _receiveQueue.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Yield an independent stream of typed websocket events.</summary>
+    public async IAsyncEnumerable<SignalsEvent> EventsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var channel = Channel.CreateUnbounded<SignalsEvent>();
+        var added = false;
+        lock (_subscriberLock)
+        {
+            if (_streamsCompleted)
+            {
+                channel.Writer.TryComplete(_completionError);
+            }
+            else
+            {
+                _subscribers.Add(channel);
+                added = true;
+            }
+        }
+        try
+        {
+            await foreach (var ev in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                yield return ev;
+            }
+        }
+        finally
+        {
+            lock (_subscriberLock)
+            {
+                if (added)
+                {
+                    _subscribers.Remove(channel);
+                }
+            }
+            channel.Writer.TryComplete();
+        }
+    }
+
+    /// <summary>Close the websocket connection.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        _readLoopCts?.Cancel();
+        if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        {
+            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None).ConfigureAwait(false);
+        }
+        if (_readLoopTask is not null)
+        {
+            try
+            {
+                await _readLoopTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        CompleteStreams();
+        _readLoopCts?.Dispose();
+        _socket.Dispose();
+    }
+
+    private Task SendAsync<T>(T payload, CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(payload, _json);
+        return _socket.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, cancellationToken);
+    }
+
+    private async Task ReadLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var ev = await ReceiveFromSocketAsync(cancellationToken).ConfigureAwait(false);
+                if (ev is null) break;
+                Publish(ev);
+            }
+            CompleteStreams();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            CompleteStreams();
+        }
+        catch (Exception ex)
+        {
+            CompleteStreams(ex);
+        }
+    }
+
+    private async Task<SignalsEvent?> ReceiveFromSocketAsync(CancellationToken cancellationToken)
+    {
         var buffer = new ArraySegment<byte>(new byte[64 * 1024]);
         using var stream = new MemoryStream();
         WebSocketReceiveResult result;
@@ -76,20 +188,31 @@ public sealed class SignalsClient : IAsyncDisposable
         return SignalsEventParser.Parse(Encoding.UTF8.GetString(stream.ToArray()));
     }
 
-    /// <summary>Close the websocket connection.</summary>
-    public async ValueTask DisposeAsync()
+    private void Publish(SignalsEvent ev)
     {
-        if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        _receiveQueue.Writer.TryWrite(ev);
+        lock (_subscriberLock)
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None).ConfigureAwait(false);
+            foreach (var subscriber in _subscribers.ToArray())
+            {
+                subscriber.Writer.TryWrite(ev);
+            }
         }
-        _socket.Dispose();
     }
 
-    private Task SendAsync<T>(T payload, CancellationToken cancellationToken)
+    private void CompleteStreams(Exception? error = null)
     {
-        var json = JsonSerializer.Serialize(payload, _json);
-        return _socket.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, cancellationToken);
+        _streamsCompleted = true;
+        _completionError = error;
+        _receiveQueue.Writer.TryComplete(error);
+        lock (_subscriberLock)
+        {
+            foreach (var subscriber in _subscribers.ToArray())
+            {
+                subscriber.Writer.TryComplete(error);
+            }
+            _subscribers.Clear();
+        }
     }
 }
 
