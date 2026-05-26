@@ -122,11 +122,14 @@ public sealed class PositionManager
         var now = signal.Timestamp ?? DateTimeOffset.UtcNow;
         var targetSize = targetSign * _config.PositionSize * targetConfidence;
         var minDelta = EffectiveMinOrderDelta();
-        if (!_positions.TryGetValue(key, out var position))
+        if (!_positions.TryGetValue(key, out var position) || Math.Abs(position.Size) <= 1e-9)
         {
             if (Math.Abs(targetSize) < minDelta) return Array.Empty<Order>();
-            position = new Position { Venue = signal.Venue, Instrument = signal.Instrument, EntryPrice = signal.Price, LastPrice = signal.Price, OpenedAt = now };
-            _positions[key] = position;
+            if (!_positions.TryGetValue(key, out position))
+            {
+                position = new Position { Venue = signal.Venue, Instrument = signal.Instrument, EntryPrice = signal.Price, LastPrice = signal.Price, OpenedAt = now };
+                _positions[key] = position;
+            }
         }
         else
         {
@@ -175,27 +178,87 @@ public sealed class PositionManager
             if (weight > 1e-9 && side != 0) totalWeight += weight;
         }
         var usedBudget = Math.Min(_config.PositionSize, totalWeight);
-        var orders = new List<Order>();
-        foreach (var key in _positions.Keys.ToArray())
+        var reductions = new List<RebalanceCandidate>();
+        var openings = new List<RebalanceCandidate>();
+        foreach (var key in _positions.Keys.OrderBy(key => key).ToArray())
         {
             var position = _positions[key];
             var targetSize = totalWeight > 0 ? sides[key] * usedBudget * weights[key] / totalWeight : 0;
             var delta = targetSize - position.Size;
-            if (Math.Abs(delta) <= 1e-9) continue;
-            var isFlip = Math.Abs(position.Size) > 1e-9 && Math.Abs(targetSize) > 1e-9 && Sign(position.Size) != Sign(targetSize);
+            var isFlip = IsFlipTarget(position.Size, targetSize);
+            if (isFlip) delta = -position.Size;
+            if (Math.Abs(delta) <= 1e-9)
+            {
+                position.Confidence = weights[key];
+                continue;
+            }
             var isOpening = Math.Abs(position.Size) <= 1e-9 && Math.Abs(targetSize) > 1e-9;
             var isClosing = Math.Abs(targetSize) <= 1e-9 && Math.Abs(position.Size) > 1e-9;
-            if (!(isFlip || isOpening || isClosing) && Math.Abs(delta) < EffectiveMinOrderDelta()) continue;
+            if (!(isFlip || isOpening || isClosing) && Math.Abs(delta) < EffectiveMinOrderDelta())
+            {
+                position.Confidence = weights[key];
+                continue;
+            }
             var context = contexts.GetValueOrDefault(key);
-            var order = OrderForDelta(key, position, delta, context.ExpectedEdge, context.Score, OrderReason(position, targetSize), context.Confidence);
-            order.TakeProfit = context.TakeProfit;
-            order.StopLoss = context.StopLoss;
-            if (!OrderMeetsInstrumentMinimum(order)) continue;
+            var candidate = new RebalanceCandidate(key, position, delta, weights[key], context, OrderReason(position, targetSize));
+            if (IsExposureReduction(position.Size, position.Size + delta))
+            {
+                reductions.Add(candidate);
+            }
+            else
+            {
+                openings.Add(candidate);
+            }
+        }
+        return reductions.Count > 0 ? MaterializeRebalanceOrders(reductions, false) : MaterializeRebalanceOrders(openings, true);
+    }
+
+    private IReadOnlyList<Order> MaterializeRebalanceOrders(IReadOnlyList<RebalanceCandidate> candidates, bool capOpenings)
+    {
+        var orders = new List<Order>();
+        var openingExposureByCurrency = new Dictionary<string, double>();
+        foreach (var candidate in candidates)
+        {
+            var delta = candidate.Delta;
+            if (capOpenings && !IsExposureReduction(candidate.Position.Size, candidate.Position.Size + delta))
+            {
+                var metadata = _instruments.Instrument(candidate.Position.Venue, candidate.Position.Instrument);
+                var used = openingExposureByCurrency.GetValueOrDefault(metadata.SettlementCurrency);
+                var available = AvailableExposureBudget(metadata.SettlementCurrency) - used;
+                if (available <= 1e-9)
+                {
+                    if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
+                    continue;
+                }
+                if (Math.Abs(delta) > available) delta = Sign(delta) * available;
+            }
+            var order = OrderForDelta(candidate.Key, candidate.Position, delta, candidate.Context.ExpectedEdge, candidate.Context.Score, candidate.Reason, candidate.Context.Confidence);
+            order.TakeProfit = candidate.Context.TakeProfit;
+            order.StopLoss = candidate.Context.StopLoss;
+            if (!OrderMeetsInstrumentMinimum(order))
+            {
+                if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
+                continue;
+            }
             orders.Add(order);
-            ApplyDelta(key, delta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key));
-            if (_positions.TryGetValue(key, out var current)) current.Confidence = weights[key];
+            if (capOpenings && !IsExposureReduction(order.PreviousSize, order.TargetSize))
+            {
+                openingExposureByCurrency[order.SettlementCurrency] = openingExposureByCurrency.GetValueOrDefault(order.SettlementCurrency) + Math.Abs(order.SizeDelta);
+            }
+            ApplyDelta(candidate.Key, delta, PositiveOr(candidate.Position.LastPrice, candidate.Position.EntryPrice), TakerFeeRate(candidate.Key));
+            if (_positions.TryGetValue(candidate.Key, out var updated)) updated.Confidence = candidate.Weight;
         }
         return orders;
+    }
+
+    private double AvailableExposureBudget(string currency)
+    {
+        var asset = _assets.Asset(currency);
+        if (asset is null) return double.PositiveInfinity;
+        var equity = PositiveOr(asset.Equity, asset.Cash + asset.Used, asset.Cash);
+        if (equity <= 0) return asset.Available > 0 ? double.PositiveInfinity : 0;
+        if (asset.Available <= 0) return 0;
+        return Math.Max(0, asset.Available / equity);
     }
 
     private Order OrderForDelta(string key, Position position, double delta, double edge, double score, string reason, double confidence)
@@ -315,7 +378,10 @@ public sealed class PositionManager
     private static double ExpectedEdge(Signal signal) => Clamp01(signal.Confidence) * Math.Max(signal.TakeProfit, 0) - (1 - Clamp01(signal.Confidence)) * Math.Max(signal.StopLoss, 0);
     private static double FeeAdjustedExpectedEdge(Signal signal, double takerFeeRate) => ExpectedEdge(signal) - 2 * takerFeeRate;
     private static string OrderReason(Position position, double targetSize) => Math.Abs(position.Size) <= 1e-9 ? "opening" : Math.Abs(targetSize) <= 1e-9 ? "closing" : Sign(position.Size) != Sign(targetSize) ? "flip" : "rebalance";
+    private static bool IsFlipTarget(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && Math.Abs(targetSize) > 1e-9 && Sign(previousSize) != Sign(targetSize);
+    private static bool IsExposureReduction(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && (Math.Abs(targetSize) <= 1e-9 || Sign(previousSize) != Sign(targetSize) || Math.Abs(targetSize) < Math.Abs(previousSize) - 1e-9);
     private static double BlendRisk(double current, double incoming, double gate) => current <= 0 ? incoming : incoming <= 0 ? current : current * (1 - Clamp01(gate)) + incoming * Clamp01(gate);
 
     private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss);
+    private readonly record struct RebalanceCandidate(string Key, Position Position, double Delta, double Weight, SignalContext Context, string Reason);
 }

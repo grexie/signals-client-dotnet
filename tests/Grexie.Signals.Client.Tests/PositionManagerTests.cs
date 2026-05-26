@@ -48,7 +48,23 @@ public sealed class PositionManagerTests
         Assert.Single(sell);
         Assert.Equal(Side.Sell, sell[0].Side);
         Assert.Equal("flip", sell[0].Reason);
-        Assert.True(sell[0].SizeDelta < -0.19);
+        Assert.Equal(0, sell[0].TargetSize, 9);
+        Assert.Equal(-0.10, sell[0].SizeDelta, 9);
+
+        var openShort = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.9,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Score = -0.6,
+            Price = 99
+        });
+        Assert.Single(openShort);
+        Assert.Equal(Side.Sell, openShort[0].Side);
+        Assert.Equal("opening", openShort[0].Reason);
     }
 
     [Fact]
@@ -279,5 +295,87 @@ public sealed class PositionManagerTests
         Assert.Equal("USDT", stats.ByInstrument["okx:ETH-USDT-SWAP"].SettlementCurrency);
         Assert.True(stats.ByInstrument["okx:ETH-USDT-SWAP"].Quantity > 0);
         Assert.True(stats.TotalPnLPercent > 0);
+    }
+
+    [Fact]
+    public void PhasesReductionsBeforeOpenings()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 0.20,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Cash = 1000, Available = 1000, Equity = 1000 });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP", SettlementCurrency = "USDT" });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "ETH-USDT-SWAP", SettlementCurrency = "USDT" });
+        manager.AddPosition(new Position
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Size = 0.15,
+            Confidence = 1,
+            EntryPrice = 100,
+            LastPrice = 100
+        });
+
+        var reductions = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "ETH-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        });
+
+        Assert.Single(reductions);
+        Assert.Equal("BTC-USDT-SWAP", reductions[0].Instrument);
+        Assert.Equal(Side.Sell, reductions[0].Side);
+        Assert.Equal(0.10, reductions[0].TargetSize, 9);
+
+        var openings = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "ETH-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        });
+
+        Assert.Single(openings);
+        Assert.Equal("ETH-USDT-SWAP", openings[0].Instrument);
+        Assert.Equal(Side.Buy, openings[0].Side);
+    }
+
+    [Fact]
+    public void CapsOpeningsToAvailableExposure()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 0.20,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Cash = 1000, Available = 50, Equity = 1000 });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP", SettlementCurrency = "USDT" });
+
+        var orders = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        });
+
+        Assert.Single(orders);
+        Assert.Equal(0.05, orders[0].SizeDelta, 9);
+        Assert.Equal(0.05, orders[0].TargetSize, 9);
     }
 }

@@ -3,7 +3,7 @@
 Typed C# client package for Grexie Signals websocket subscriptions and production-style in-memory position management.
 
 ```sh
-dotnet add package Grexie.Signals.Client --version 0.1.1
+dotnet add package Grexie.Signals.Client --version 0.1.2
 ```
 
 ## Websocket Client
@@ -57,7 +57,7 @@ var orders = manager.HandleSignal(new Signal
 });
 ```
 
-The manager mirrors the production server sizing model: shared portfolio budget, confidence-weighted rebalance, `MinOrderDelta` scaled by `PositionSize`, flip-safe opposite-side handling, fee-aware realized PnL, and leverage selected from confidence, fee-adjusted expected edge, and score.
+The manager mirrors the production server sizing model: shared portfolio budget, confidence-weighted rebalance, reductions/closes/first-phase flips before openings or increases, live `AssetManager` available-exposure caps for openings, `MinOrderDelta` scaled by `PositionSize`, flip-safe opposite-side handling, fee-aware realized PnL, and leverage selected from confidence, fee-adjusted expected edge, and score.
 
 `PositionManager` ignores replay signal events and ignores live signals whose venue/instrument pair has not been configured in its `InstrumentManager`. `RunAsync` uses an independent event stream, so multiple position managers can share one `SignalsClient`.
 
