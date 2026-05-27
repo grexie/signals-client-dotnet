@@ -3,7 +3,7 @@
 Typed C# client package for Grexie Signals websocket subscriptions and production-style in-memory position management.
 
 ```sh
-dotnet add package Grexie.Signals.Client --version 0.1.9
+dotnet add package Grexie.Signals.Client --version 0.1.10
 ```
 
 ## Websocket Client

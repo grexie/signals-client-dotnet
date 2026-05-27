@@ -197,15 +197,23 @@ public sealed class PositionManager
         {
             var position = _positions[key];
             var targetSize = targets.GetValueOrDefault(key);
+            if (Math.Abs(position.Size) > 1e-9 && !MeetsMinimumPositionSize(PositionMargin(key, position)))
+            {
+                targetSize = 0;
+            }
+            else if (targetSize != 0 && !MeetsMinimumPositionSize(MarginForQuantity(key, position, targetSize)))
+            {
+                if (Math.Abs(position.Size) <= 1e-9)
+                {
+                    position.Confidence = weights[key];
+                    continue;
+                }
+                targetSize = 0;
+            }
             var delta = targetSize - position.Size;
             var isFlip = IsFlipTarget(position.Size, targetSize);
             if (isFlip) delta = -position.Size;
             if (Math.Abs(delta) <= 1e-9)
-            {
-                position.Confidence = weights[key];
-                continue;
-            }
-            if (targetSize != 0 && !MeetsMinimumPositionSize(MarginForQuantity(key, position, targetSize)) && !IsExposureReduction(position.Size, targetSize))
             {
                 position.Confidence = weights[key];
                 continue;

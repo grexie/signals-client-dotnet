@@ -452,5 +452,45 @@ public sealed class PositionManagerTests
         Assert.True(total <= 0.01 + 1e-9, $"total={total}");
     }
 
+    [Fact]
+    public void ClosesPositionBelowMinimumPositionSizeRatio()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinPositionSizeRatio = 0.01,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            RebalanceInterval = TimeSpan.Zero
+        });
+        manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Cash = 1000, Available = 0.5, Used = 999.5, Equity = 1000 });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DUST-USDT-SWAP", SettlementCurrency = "USDT" });
+        manager.AddPosition(new Position
+        {
+            Venue = "okx",
+            Instrument = "DUST-USDT-SWAP",
+            Size = 0.005,
+            Confidence = 0.5,
+            EntryPrice = 100,
+            LastPrice = 100
+        });
+
+        var orders = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "DUST-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        });
+
+        var order = Assert.Single(orders);
+        Assert.Equal(Side.Sell, order.Side);
+        Assert.Equal("closing", order.Reason);
+        Assert.Equal(0, order.TargetSize, 9);
+    }
+
     private static double OrderBudgetCost(Order order) => Math.Max(0, order.Margin) + Math.Max(0, order.EstimatedFee);
 }
