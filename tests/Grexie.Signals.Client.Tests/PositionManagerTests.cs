@@ -465,7 +465,7 @@ public sealed class PositionManagerTests
             RebalanceInterval = TimeSpan.FromHours(6)
         });
         manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Cash = 1000, Available = 0.5, Used = 999.5, Equity = 1000 });
-        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DUST-USDT-SWAP", SettlementCurrency = "USDT" });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DUST-USDT-SWAP", SettlementCurrency = "USDT", LotSize = 0.1, MinSize = 0.1 });
         manager.AddPosition(new Position
         {
             Venue = "okx",
@@ -493,6 +493,8 @@ public sealed class PositionManagerTests
         Assert.Equal(Side.Sell, order.Side);
         Assert.Equal("closing", order.Reason);
         Assert.Equal(0, order.TargetSize, 9);
+        Assert.Equal(-0.005, order.SizeDelta, 9);
+        Assert.Equal(0.005, order.Quantity, 9);
     }
 
     private static double OrderBudgetCost(Order order) => Math.Max(0, order.Margin) + Math.Max(0, order.EstimatedFee);

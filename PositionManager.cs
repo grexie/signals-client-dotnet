@@ -504,7 +504,8 @@ public sealed class PositionManager
         var price = RoundToTick(PositiveOr(position.LastPrice, position.EntryPrice), metadata.TickSize);
         var requestedAbsDelta = Math.Abs(delta);
         var contractNotional = InstrumentContractNotional(price, metadata);
-        var quantity = contractNotional > 0 ? RoundDownToStep(requestedAbsDelta, metadata.LotSize) : 0;
+        var closesToZero = Math.Abs(position.Size) > 1e-9 && Math.Abs(position.Size + delta) <= 1e-9;
+        var quantity = contractNotional > 0 && !closesToZero ? RoundDownToStep(requestedAbsDelta, metadata.LotSize) : requestedAbsDelta;
         var notional = quantity * contractNotional;
         var margin = leverage > 0 ? notional / leverage : 0;
         var executableDelta = Sign(delta) * quantity;
