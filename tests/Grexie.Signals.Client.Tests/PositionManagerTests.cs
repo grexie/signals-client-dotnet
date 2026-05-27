@@ -9,7 +9,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.10,
+            MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0.20,
             MaxLeverage = 5
@@ -72,7 +72,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.10,
+            MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0.20
         });
@@ -98,7 +98,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.50,
+            MaxMarginRatio = 0.50,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -126,8 +126,8 @@ public sealed class PositionManagerTests
 
         Assert.Single(orders);
         Assert.Equal(1, orders[0].Quantity, 9);
-        Assert.Equal(0.333, orders[0].SizeDelta, 9);
-        Assert.Equal(0.333, orders[0].TargetSize, 9);
+        Assert.Equal(1, orders[0].SizeDelta, 9);
+        Assert.Equal(1, orders[0].TargetSize, 9);
     }
 
     [Fact]
@@ -135,7 +135,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.10,
+            MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -162,7 +162,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.10,
+            MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -192,7 +192,7 @@ public sealed class PositionManagerTests
         {
             var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
             {
-                PositionSize = 1,
+                MaxMarginRatio = 1,
                 MinExpectedEdge = 0,
                 MinOrderDelta = 0,
                 MinLeverage = 1,
@@ -227,7 +227,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.10,
+            MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0,
             MaxLeverage = 5
@@ -269,7 +269,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.01,
+            MaxMarginRatio = 0.01,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -331,7 +331,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.20,
+            MaxMarginRatio = 0.20,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -342,7 +342,7 @@ public sealed class PositionManagerTests
         {
             Venue = "okx",
             Instrument = "BTC-USDT-SWAP",
-            Size = 0.15,
+            Size = 2,
             Confidence = 1,
             EntryPrice = 100,
             LastPrice = 100
@@ -362,7 +362,7 @@ public sealed class PositionManagerTests
         Assert.Single(reductions);
         Assert.Equal("BTC-USDT-SWAP", reductions[0].Instrument);
         Assert.Equal(Side.Sell, reductions[0].Side);
-        Assert.Equal(0.10 / (1 + reductions[0].Leverage * reductions[0].FeeRate), reductions[0].TargetSize, 9);
+        Assert.Equal((100 / (1 + reductions[0].Leverage * reductions[0].FeeRate)) / reductions[0].Price, reductions[0].TargetSize, 9);
 
         var openings = manager.HandleSignal(new Signal
         {
@@ -385,7 +385,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 0.20,
+            MaxMarginRatio = 0.20,
             MinExpectedEdge = 0,
             MinOrderDelta = 0
         });
@@ -404,8 +404,8 @@ public sealed class PositionManagerTests
         });
 
         Assert.Single(orders);
-        Assert.True(OrderBudgetCost(orders[0]) <= 0.05 + 1e-9);
-        Assert.True(orders[0].SizeDelta < 0.05);
+        Assert.True(OrderBudgetCost(orders[0]) <= 50 + 1e-9);
+        Assert.True(orders[0].Margin < 50);
     }
 
     [Fact]
@@ -413,7 +413,7 @@ public sealed class PositionManagerTests
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
-            PositionSize = 1,
+            MaxMarginRatio = 1,
             MinExpectedEdge = 0,
             MinOrderDelta = 0,
             RebalanceInterval = TimeSpan.FromHours(6),
@@ -449,8 +449,8 @@ public sealed class PositionManagerTests
         });
 
         var total = manager.Positions().Sum(position => Math.Abs(position.Size));
-        Assert.True(total <= 1 + 1e-9, $"total={total}");
+        Assert.True(total <= 0.01 + 1e-9, $"total={total}");
     }
 
-    private static double OrderBudgetCost(Order order) => Math.Abs(order.SizeDelta) + Math.Max(0, order.EstimatedFee);
+    private static double OrderBudgetCost(Order order) => Math.Max(0, order.Margin) + Math.Max(0, order.EstimatedFee);
 }

@@ -3,7 +3,7 @@
 Typed C# client package for Grexie Signals websocket subscriptions and production-style in-memory position management.
 
 ```sh
-dotnet add package Grexie.Signals.Client --version 0.1.7
+dotnet add package Grexie.Signals.Client --version 0.1.9
 ```
 
 ## Websocket Client
@@ -35,7 +35,8 @@ var manager = new PositionManager(
     client,
     PositionManagerConfig.ProductionDefaults() with
     {
-        PositionSize = 0.10,
+        MaxMarginRatio = 0.10,
+        MinPositionSizeRatio = 0.01,
         MaxLeverage = 3.0
     });
 manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata
@@ -57,7 +58,7 @@ var orders = manager.HandleSignal(new Signal
 });
 ```
 
-The manager mirrors the production server sizing model: shared portfolio budget, confidence-weighted rebalance, reductions/closes/first-phase flips before openings or increases, live `AssetManager` available-exposure caps for openings, `MinOrderDelta` scaled by `PositionSize`, flip-safe opposite-side handling, fee-aware realized PnL, and leverage selected from confidence, fee-adjusted expected edge, and score.
+The manager mirrors the production server sizing model: `MaxMarginRatio` is the fraction of `AssetManager` capital that can be allocated as portfolio margin, `MinPositionSizeRatio` defaults to 1% of capital, positions are signed executable quantities/lots, and emitted orders include quantity, margin, notional, and fee estimates. It performs confidence-weighted rebalance, emits reductions/closes/first-phase flips before openings or increases, caps openings by live `AssetManager` available exposure, scales `MinOrderDelta` by the max margin budget, handles opposite-side flips, accounts for fees in realized PnL, and selects leverage from confidence, fee-adjusted expected edge, and score.
 
 `PositionManager` ignores replay signal events and ignores live signals whose venue/instrument pair has not been configured in its `InstrumentManager`. `RunAsync` uses an independent event stream, so multiple position managers can share one `SignalsClient`.
 

@@ -107,6 +107,8 @@ public sealed record InstrumentMetadata
     public double LotSize { get; init; }
     public double MinSize { get; init; }
     public double TickSize { get; init; }
+    public double ContractValue { get; init; }
+    public double ContractMultiplier { get; init; }
     public double MaxLeverage { get; init; }
 }
 
@@ -128,14 +130,18 @@ public sealed class InstrumentManager
 /// <summary>Fee-aware position manager configuration.</summary>
 public sealed record PositionManagerConfig
 {
-    public double PositionSize { get; init; } = 1.0;
+    public double MaxMarginRatio { get; init; } = 1.0;
+    public double PositionSize { get; init; }
     public double MinExpectedEdge { get; init; } = 0.0045;
     public double MinOrderDelta { get; init; } = 0.20;
+    public double MinPositionSizeRatio { get; init; } = 0.01;
     public TimeSpan RebalanceInterval { get; init; } = TimeSpan.FromHours(6);
     public double MakerFeeRate { get; init; } = 0.0002;
     public double TakerFeeRate { get; init; } = 0.0005;
     public double MinLeverage { get; init; } = 1.0;
     public double MaxLeverage { get; init; } = 1.0;
+    public double AvailableMarginBuffer { get; init; } = 0.10;
+    public double ExecutableMarginBuffer { get; init; } = 0.001;
     public IReadOnlyDictionary<string, InstrumentConfig> Instruments { get; init; } = new Dictionary<string, InstrumentConfig>();
 
     /// <summary>Server-compatible execution-policy defaults.</summary>
@@ -160,7 +166,7 @@ public sealed record Position
     public DateTimeOffset? OpenedAt { get; set; }
     public DateTimeOffset? LastSignalAt { get; set; }
     public Side? Side => Size < 0 ? Grexie.Signals.Client.Side.Sell : Size > 0 ? Grexie.Signals.Client.Side.Buy : null;
-    public double UnrealizedPnL => PriceMove() * Math.Abs(Size);
+    public double UnrealizedPnL => PriceMove() * Math.Abs(Size) * (EntryPrice > 0 ? EntryPrice : 1);
 
     internal double PriceMove()
     {
@@ -185,6 +191,7 @@ public sealed record Order
     public required double FeeRate { get; set; }
     public required double EstimatedFee { get; set; }
     public double EstimatedFeeValue { get; set; }
+    public double Margin { get; init; }
     public double Quantity { get; init; }
     public double Notional { get; init; }
     public string SettlementCurrency { get; init; } = "USDT";
