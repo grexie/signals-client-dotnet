@@ -455,13 +455,14 @@ public sealed class PositionManagerTests
     [Fact]
     public void ClosesPositionBelowMinimumPositionSizeRatio()
     {
+        var lastSignalAt = DateTimeOffset.UtcNow.AddMinutes(-1);
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
         {
             MaxMarginRatio = 1,
             MinPositionSizeRatio = 0.01,
             MinExpectedEdge = 0,
             MinOrderDelta = 0,
-            RebalanceInterval = TimeSpan.Zero
+            RebalanceInterval = TimeSpan.FromHours(6)
         });
         manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Cash = 1000, Available = 0.5, Used = 999.5, Equity = 1000 });
         manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "DUST-USDT-SWAP", SettlementCurrency = "USDT" });
@@ -472,7 +473,8 @@ public sealed class PositionManagerTests
             Size = 0.005,
             Confidence = 0.5,
             EntryPrice = 100,
-            LastPrice = 100
+            LastPrice = 100,
+            LastSignalAt = lastSignalAt
         });
 
         var orders = manager.HandleSignal(new Signal
@@ -483,7 +485,8 @@ public sealed class PositionManagerTests
             Confidence = 1,
             TakeProfit = 0.02,
             StopLoss = 0.004,
-            Price = 100
+            Price = 100,
+            Timestamp = lastSignalAt.AddMinutes(1)
         });
 
         var order = Assert.Single(orders);

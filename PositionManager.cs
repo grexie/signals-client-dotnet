@@ -147,7 +147,8 @@ public sealed class PositionManager
         else
         {
             var isFlip = Sign(position.Size) != 0 && Sign(position.Size) != targetSign;
-            if (!isFlip && _config.RebalanceInterval > TimeSpan.Zero && position.LastSignalAt is not null && now < position.LastSignalAt + _config.RebalanceInterval) return Array.Empty<Order>();
+            var belowMinimum = !MeetsMinimumPositionSize(PositionMargin(key, position));
+            if (!isFlip && !belowMinimum && _config.RebalanceInterval > TimeSpan.Zero && position.LastSignalAt is not null && now < position.LastSignalAt + _config.RebalanceInterval) return Array.Empty<Order>();
         }
 
         position.Confidence = targetConfidence;
