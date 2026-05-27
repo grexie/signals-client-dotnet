@@ -408,5 +408,49 @@ public sealed class PositionManagerTests
         Assert.True(orders[0].SizeDelta < 0.05);
     }
 
+    [Fact]
+    public void CapsOpeningsToRemainingPortfolioBudgetWithoutAssetSnapshots()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            PositionSize = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            RebalanceInterval = TimeSpan.FromHours(6),
+            MinLeverage = 1,
+            MaxLeverage = 1
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP", SettlementCurrency = "USDT" });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "ETH-USDT-SWAP", SettlementCurrency = "USDT" });
+
+        var first = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.51,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            Timestamp = DateTimeOffset.Parse("2026-05-27T00:00:00Z")
+        });
+        Assert.Single(first);
+
+        manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "ETH-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.51,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            Timestamp = DateTimeOffset.Parse("2026-05-27T00:01:00Z")
+        });
+
+        var total = manager.Positions().Sum(position => Math.Abs(position.Size));
+        Assert.True(total <= 1 + 1e-9, $"total={total}");
+    }
+
     private static double OrderBudgetCost(Order order) => Math.Abs(order.SizeDelta) + Math.Max(0, order.EstimatedFee);
 }

@@ -322,12 +322,20 @@ public sealed class PositionManager
 
     private double AvailableExposureBudget(string currency)
     {
+        var portfolioBudget = AvailablePortfolioBudget();
         var asset = _assets.Asset(currency);
-        if (asset is null) return double.PositiveInfinity;
+        if (asset is null) return portfolioBudget;
         var equity = PositiveOr(asset.Equity, asset.Cash + asset.Used, asset.Cash);
-        if (equity <= 0) return asset.Available > 0 ? double.PositiveInfinity : 0;
+        if (equity <= 0) return asset.Available > 0 ? portfolioBudget : 0;
         if (asset.Available <= 0) return 0;
-        return Math.Max(0, asset.Available / equity);
+        return Math.Min(Math.Max(0, asset.Available / equity), portfolioBudget);
+    }
+
+    private double AvailablePortfolioBudget()
+    {
+        if (_config.PositionSize <= 0) return 0;
+        var used = _positions.Values.Sum(position => Math.Abs(position.Size));
+        return Math.Max(0, _config.PositionSize - used);
     }
 
     private ExecutableAllocation ExecutableAllocationForBudget(string key, Position position, double budget, SignalContext context)
