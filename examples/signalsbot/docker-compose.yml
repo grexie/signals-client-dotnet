@@ -1,0 +1,15 @@
+services:
+  signalsbot:
+    build:
+      context: ../..
+      dockerfile: examples/signalsbot/Dockerfile
+    env_file:
+      - .env
+    environment:
+      SIGNALS_DB_PATH: /data/signalsbot.json
+    volumes:
+      - signalsbot-data:/data
+    restart: unless-stopped
+
+volumes:
+  signalsbot-data:

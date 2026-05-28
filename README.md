@@ -72,6 +72,21 @@ Use `AssetManager` to update cash, available balance, used margin, and equity. U
 
 Call `Stats()` for realized and unrealized PnL in account value and percent, grouped by instrument and settlement currency.
 
+## signalsbot Paper Trader Example
+
+The `examples/signalsbot` directory contains a command-line paper trader that reads `.env`, subscribes to `SIGNALS_INSTRUMENTS`, consumes OKX candles, connects with `SIGNALS_WEBSOCKET_TOKEN`, and persists the position manager `InitialState`/`Persist` workflow to a local JSON database.
+
+```sh
+cd examples/signalsbot
+cp .env.example .env
+dotnet run -- papertrader
+dotnet run -- clean
+docker compose up --build
+docker compose run --rm signalsbot clean
+```
+
+Set `SIGNALS_WEBSOCKET_URL` to override `wss://signals.grexie.com/ws`. Docker Compose stores the local database in the `signalsbot-data` volume.
+
 ## Development
 
 ```sh

@@ -16,6 +16,7 @@
     <PackageTags>grexie;signals;websocket;trading;position-management</PackageTags>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="examples/**/*.cs" />
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
 </Project>
