@@ -177,7 +177,7 @@ public sealed class PositionManager
         var targetConfidence = Clamp01(signal.Confidence);
         if (targetSign == 0 || targetConfidence <= 0) return Array.Empty<Order>();
         var edge = FeeAdjustedExpectedEdge(signal, TakerFeeRate(key));
-        if (_config.MinExpectedEdge > 0 && edge < _config.MinExpectedEdge) return Array.Empty<Order>();
+        if (_config.MinExpectedEdge > 0 && edge < _config.MinExpectedEdge && !signal.ManagePositionsOnly) return Array.Empty<Order>();
         var (trailingStopActivation, trailingStopDistance, trailingStopMinProfit) = TrailingConfigForSignal(key, signal);
 
         var now = signal.Timestamp ?? DateTimeOffset.UtcNow;
@@ -185,6 +185,7 @@ public sealed class PositionManager
         var minDelta = EffectiveMinOrderDelta();
         if (!_positions.TryGetValue(key, out var position) || Math.Abs(position.Size) <= 1e-9)
         {
+            if (signal.ManagePositionsOnly) return Array.Empty<Order>();
             if (portfolioBudget < minDelta || !MeetsMinimumPositionSize(portfolioBudget)) return Array.Empty<Order>();
             if (!_positions.TryGetValue(key, out position))
             {
@@ -199,7 +200,16 @@ public sealed class PositionManager
             if (!isFlip && !belowMinimum && _config.RebalanceInterval > TimeSpan.Zero && position.LastSignalAt is not null && now < position.LastSignalAt + _config.RebalanceInterval) return Array.Empty<Order>();
         }
 
-        position.Confidence = targetConfidence;
+        if (signal.ManagePositionsOnly && Sign(position.Size) == 0) return Array.Empty<Order>();
+        var contextConfidence = targetConfidence;
+        var overrideSide = targetSign;
+        if (signal.ManagePositionsOnly)
+        {
+            if (Sign(position.Size) != targetSign) overrideSide = 0;
+            else contextConfidence = Math.Min(contextConfidence, Clamp01(position.Confidence));
+        }
+
+        position.Confidence = contextConfidence;
         position.LastSignalAt = now;
         if (signal.Price > 0)
         {
@@ -222,10 +232,10 @@ public sealed class PositionManager
             position.TrailingStopDistance = trailingStopDistance;
             position.TrailingStopMinProfit = trailingStopMinProfit;
         }
-        position.Leverage = SelectLeverage(key, targetConfidence, edge, signal.Score);
-        var orders = Rebalance(new Dictionary<string, double> { [key] = targetSign }, new Dictionary<string, SignalContext>
+        position.Leverage = SelectLeverage(key, contextConfidence, edge, signal.Score);
+        var orders = Rebalance(new Dictionary<string, double> { [key] = overrideSide }, new Dictionary<string, SignalContext>
         {
-            [key] = new(targetConfidence, signal.Score, edge, signal.TakeProfit, signal.StopLoss, trailingStopActivation, trailingStopDistance, trailingStopMinProfit)
+            [key] = new(contextConfidence, signal.Score, edge, signal.TakeProfit, signal.StopLoss, trailingStopActivation, trailingStopDistance, trailingStopMinProfit, signal.ManagePositionsOnly)
         });
         Persist();
         return orders;
@@ -283,6 +293,8 @@ public sealed class PositionManager
                 }
                 targetSize = 0;
             }
+            var context = contexts.GetValueOrDefault(key);
+            if (context.ManagePositionsOnly) targetSize = ManagePositionsOnlyTargetSize(position.Size, targetSize);
             var delta = targetSize - position.Size;
             var isFlip = IsFlipTarget(position.Size, targetSize);
             if (isFlip) delta = -position.Size;
@@ -298,7 +310,6 @@ public sealed class PositionManager
                 position.Confidence = weights[key];
                 continue;
             }
-            var context = contexts.GetValueOrDefault(key);
             var candidate = new RebalanceCandidate(key, position, delta, weights[key], context, OrderReason(position, targetSize));
             if (IsExposureReduction(position.Size, position.Size + delta))
             {
@@ -390,6 +401,11 @@ public sealed class PositionManager
         foreach (var candidate in candidates)
         {
             var delta = candidate.Delta;
+            if (candidate.Context.ManagePositionsOnly && !IsExposureReduction(candidate.Position.Size, candidate.Position.Size + delta))
+            {
+                if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
+                continue;
+            }
             if (capOpenings && !IsExposureReduction(candidate.Position.Size, candidate.Position.Size + delta))
             {
                 var metadata = _instruments.Instrument(candidate.Position.Venue, candidate.Position.Instrument);
@@ -765,10 +781,11 @@ public sealed class PositionManager
     private static double RatioOrZero(double numerator, double denominator) => denominator > 0 ? numerator / denominator : 0;
     private static string OrderReason(Position position, double targetSize) => Math.Abs(position.Size) <= 1e-9 ? "opening" : Math.Abs(targetSize) <= 1e-9 ? "closing" : Sign(position.Size) != Sign(targetSize) ? "flip" : "rebalance";
     private static bool IsFlipTarget(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && Math.Abs(targetSize) > 1e-9 && Sign(previousSize) != Sign(targetSize);
+    private static double ManagePositionsOnlyTargetSize(double previousSize, double targetSize) => Math.Abs(previousSize) <= 1e-9 ? 0 : Math.Abs(targetSize) <= 1e-9 ? 0 : Sign(previousSize) != Sign(targetSize) ? 0 : Math.Abs(targetSize) > Math.Abs(previousSize) ? previousSize : targetSize;
     private static bool IsExposureReduction(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && (Math.Abs(targetSize) <= 1e-9 || Sign(previousSize) != Sign(targetSize) || Math.Abs(targetSize) < Math.Abs(previousSize) - 1e-9);
     private static double BlendRisk(double current, double incoming, double gate) => current <= 0 ? incoming : incoming <= 0 ? current : current * (1 - Clamp01(gate)) + incoming * Clamp01(gate);
 
-    private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss, double TrailingStopActivation, double TrailingStopDistance, double TrailingStopMinProfit);
+    private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss, double TrailingStopActivation, double TrailingStopDistance, double TrailingStopMinProfit, bool ManagePositionsOnly);
     private readonly record struct ExecutableAllocation(double Quantity, double Margin, double Fee);
     private readonly record struct RebalanceCandidate(string Key, Position Position, double Delta, double Weight, SignalContext Context, string Reason);
 }

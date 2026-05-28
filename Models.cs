@@ -53,6 +53,7 @@ public sealed record Signal
     public string? ArtifactID { get; set; }
     public string? ArtifactVersion { get; set; }
     public string? RejectedReason { get; set; }
+    public bool ManagePositionsOnly { get; set; }
     public DateTimeOffset? Timestamp { get; set; }
     public double Price { get; set; }
 }
