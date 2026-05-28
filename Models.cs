@@ -28,6 +28,9 @@ public sealed record Signal
     public Side Side { get; set; }
     public double TakeProfit { get; set; }
     public double StopLoss { get; set; }
+    public double TrailingStopActivation { get; set; }
+    public double TrailingStopDistance { get; set; }
+    public double TrailingStopMinProfit { get; set; }
     public double Score { get; set; }
     public IReadOnlyList<SignalComponent> Components { get; set; } = Array.Empty<SignalComponent>();
     public string? ModelVariant { get; set; }
@@ -71,6 +74,9 @@ public sealed record InstrumentConfig
     public double? TakerFeeRate { get; init; }
     public double? MinLeverage { get; init; }
     public double? MaxLeverage { get; init; }
+    public double? TrailingStopActivation { get; init; }
+    public double? TrailingStopDistance { get; init; }
+    public double? TrailingStopMinProfit { get; init; }
 }
 
 /// <summary>Account state for one settlement currency.</summary>
@@ -159,7 +165,12 @@ public sealed record Position
     public double LastPrice { get; set; }
     public double TakeProfit { get; set; }
     public double StopLoss { get; set; }
+    public double TrailingStopActivation { get; set; }
+    public double TrailingStopDistance { get; set; }
+    public double TrailingStopMinProfit { get; set; }
     public double Leverage { get; set; } = 1.0;
+    public double MFE { get; set; }
+    public double MAE { get; set; }
     public double RealizedGross { get; set; }
     public double Fees { get; set; }
     public double RealizedPnL { get; set; }
@@ -172,6 +183,52 @@ public sealed record Position
     {
         if (EntryPrice <= 0 || LastPrice <= 0) return 0;
         return Size < 0 ? (EntryPrice - LastPrice) / EntryPrice : (LastPrice - EntryPrice) / EntryPrice;
+    }
+
+    internal double TakeProfitPrice()
+    {
+        if (EntryPrice <= 0 || TakeProfit <= 0) return 0;
+        return Size < 0 ? EntryPrice * (1 - TakeProfit) : EntryPrice * (1 + TakeProfit);
+    }
+
+    internal double StopLossPrice()
+    {
+        if (EntryPrice <= 0 || StopLoss <= 0) return 0;
+        return Size < 0 ? EntryPrice * (1 + StopLoss) : EntryPrice * (1 - StopLoss);
+    }
+
+    internal bool TakeProfitTriggered(double price)
+    {
+        var target = TakeProfitPrice();
+        return target > 0 && (Size < 0 ? price <= target : price >= target);
+    }
+
+    internal bool StopLossTriggered(double price)
+    {
+        var target = StopLossPrice();
+        return target > 0 && (Size < 0 ? price >= target : price <= target);
+    }
+
+    internal bool TrailingStopTriggered()
+    {
+        if (TrailingStopActivation <= 0 || TrailingStopDistance <= 0) return false;
+        if (MFE + 1e-9 < TrailingStopActivation) return false;
+        var floor = Math.Max(MFE - TrailingStopDistance, TrailingStopMinProfit);
+        return PriceMove() <= floor + 1e-9;
+    }
+
+    internal void ResetExcursion()
+    {
+        var move = PriceMove();
+        MFE = Math.Max(move, 0);
+        MAE = Math.Min(move, 0);
+    }
+
+    internal void UpdateExcursion()
+    {
+        var move = PriceMove();
+        MFE = Math.Max(MFE, move);
+        MAE = Math.Min(MAE, move);
     }
 }
 
@@ -202,6 +259,9 @@ public sealed record Order
     public double Score { get; init; }
     public double TakeProfit { get; set; }
     public double StopLoss { get; set; }
+    public double TrailingStopActivation { get; set; }
+    public double TrailingStopDistance { get; set; }
+    public double TrailingStopMinProfit { get; set; }
     public bool ReduceOnly { get; init; }
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
     public long? SubscriptionId { get; set; }
@@ -209,7 +269,7 @@ public sealed record Order
 }
 
 /// <summary>Closed realized trade snapshot.</summary>
-public sealed record ClosedTrade(string Venue, string Instrument, Side Side, double Size, double EntryPrice, double ExitPrice, double RealizedGross, double Fees, double RealizedPnL, DateTimeOffset ClosedAt);
+public sealed record ClosedTrade(string Venue, string Instrument, Side Side, double Size, double EntryPrice, double ExitPrice, double ExitMove, double RealizedGross, double Fees, double RealizedPnL, double MFE, double MAE, string ExitReason, DateTimeOffset ClosedAt);
 
 public sealed record InstrumentPositionStats(string Venue, string Instrument, string SettlementCurrency, Side? Side, double Size, double Quantity, double Notional, double RealizedPnL, double UnrealizedPnL, double Fees, double RealizedPnLPercent, double UnrealizedPnLPercent, double TotalPnLPercent, double Leverage);
 

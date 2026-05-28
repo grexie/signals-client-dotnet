@@ -409,6 +409,79 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
+    public void TrailingStopClosesAfterFavorableGiveback()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+
+        var orders = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.50,
+            StopLoss = 0.20,
+            TrailingStopActivation = 0.02,
+            TrailingStopDistance = 0.01,
+            TrailingStopMinProfit = 0.001,
+            Price = 100
+        });
+
+        var open = Assert.Single(orders);
+        Assert.Equal(0.02, open.TrailingStopActivation, 9);
+        Assert.Empty(manager.UpdatePrice("okx", "BTC-USDT-SWAP", 103));
+
+        var close = Assert.Single(manager.UpdatePrice("okx", "BTC-USDT-SWAP", 101.8));
+        Assert.Equal("trailing_stop", close.Reason);
+        Assert.Empty(manager.Positions());
+        var closed = Assert.Single(manager.ClosedTrades());
+        Assert.Equal("trailing_stop", closed.ExitReason);
+        Assert.True(closed.MFE >= 0.03 - 1e-9);
+        Assert.True(closed.RealizedPnL > 0);
+    }
+
+    [Fact]
+    public void TrailingActivationIsAtLeastBreakeven()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            TakerFeeRate = 0.0005,
+            Instruments = new Dictionary<string, InstrumentConfig>
+            {
+                ["okx:BTC-USDT-SWAP"] = new()
+                {
+                    TrailingStopActivation = 0.0001,
+                    TrailingStopDistance = 0.01
+                }
+            }
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+
+        var order = Assert.Single(manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.50,
+            StopLoss = 0.20,
+            Price = 100
+        }));
+
+        Assert.Equal(0.001, order.TrailingStopMinProfit, 9);
+        Assert.Equal(0.002, order.TrailingStopActivation, 9);
+    }
+
+    [Fact]
     public void CapsOpeningsToRemainingPortfolioBudgetWithoutAssetSnapshots()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with

@@ -104,7 +104,29 @@ public sealed class PositionManager
         var delta = -position.Size;
         var order = OrderForDelta(key, position, delta, 0, 0, "closing", position.Confidence);
         if (!OrderMeetsInstrumentMinimum(order)) return Array.Empty<Order>();
-        ApplyDelta(key, order.SizeDelta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key));
+        ApplyDelta(key, order.SizeDelta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key), "closing");
+        return new[] { order };
+    }
+
+    public IReadOnlyList<Order> UpdatePrice(string venue, string instrument, double price)
+    {
+        if (price <= 0) return Array.Empty<Order>();
+        var key = Key(venue, instrument);
+        if (!_positions.TryGetValue(key, out var position) || Math.Abs(position.Size) <= 1e-9) return Array.Empty<Order>();
+
+        position.LastPrice = price;
+        position.UpdateExcursion();
+        var reason = ExitReason(position, price);
+        if (reason.Length == 0) return Array.Empty<Order>();
+
+        var feeRate = reason == "take_profit" ? MakerFeeRate(key) : TakerFeeRate(key);
+        var order = OrderForDelta(key, position, -position.Size, 0, 0, reason, position.Confidence);
+        order.FeeRate = feeRate;
+        order.EstimatedFee = FeeValueForNotional(order.Notional, feeRate);
+        order.EstimatedFeeValue = order.Notional * feeRate;
+        if (!OrderMeetsInstrumentMinimum(order)) return Array.Empty<Order>();
+
+        ApplyDelta(key, order.SizeDelta, price, feeRate, reason);
         return new[] { order };
     }
 
@@ -131,6 +153,7 @@ public sealed class PositionManager
         if (targetSign == 0 || targetConfidence <= 0) return Array.Empty<Order>();
         var edge = FeeAdjustedExpectedEdge(signal, TakerFeeRate(key));
         if (_config.MinExpectedEdge > 0 && edge < _config.MinExpectedEdge) return Array.Empty<Order>();
+        var (trailingStopActivation, trailingStopDistance, trailingStopMinProfit) = TrailingConfigForSignal(key, signal);
 
         var now = signal.Timestamp ?? DateTimeOffset.UtcNow;
         var portfolioBudget = MaxPortfolioMarginBudget();
@@ -168,10 +191,16 @@ public sealed class PositionManager
             position.TakeProfit = BlendRisk(position.TakeProfit, signal.TakeProfit, 0.5);
             position.StopLoss = BlendRisk(position.StopLoss, signal.StopLoss, 0.5);
         }
+        if (trailingStopActivation > 0 && trailingStopDistance > 0)
+        {
+            position.TrailingStopActivation = trailingStopActivation;
+            position.TrailingStopDistance = trailingStopDistance;
+            position.TrailingStopMinProfit = trailingStopMinProfit;
+        }
         position.Leverage = SelectLeverage(key, targetConfidence, edge, signal.Score);
         return Rebalance(new Dictionary<string, double> { [key] = targetSign }, new Dictionary<string, SignalContext>
         {
-            [key] = new(targetConfidence, signal.Score, edge, signal.TakeProfit, signal.StopLoss)
+            [key] = new(targetConfidence, signal.Score, edge, signal.TakeProfit, signal.StopLoss, trailingStopActivation, trailingStopDistance, trailingStopMinProfit)
         });
     }
 
@@ -338,6 +367,9 @@ public sealed class PositionManager
             var order = OrderForDelta(candidate.Key, candidate.Position, delta, candidate.Context.ExpectedEdge, candidate.Context.Score, candidate.Reason, candidate.Context.Confidence);
             order.TakeProfit = candidate.Context.TakeProfit;
             order.StopLoss = candidate.Context.StopLoss;
+            order.TrailingStopActivation = candidate.Context.TrailingStopActivation;
+            order.TrailingStopDistance = candidate.Context.TrailingStopDistance;
+            order.TrailingStopMinProfit = candidate.Context.TrailingStopMinProfit;
             if (!OrderMeetsInstrumentMinimum(order))
             {
                 if (_positions.TryGetValue(candidate.Key, out var current)) current.Confidence = candidate.Weight;
@@ -348,8 +380,17 @@ public sealed class PositionManager
             {
                 openingExposureByCurrency[order.SettlementCurrency] = openingExposureByCurrency.GetValueOrDefault(order.SettlementCurrency) + OrderBudgetCost(order);
             }
-            ApplyDelta(candidate.Key, order.SizeDelta, PositiveOr(candidate.Position.LastPrice, candidate.Position.EntryPrice), TakerFeeRate(candidate.Key));
-            if (_positions.TryGetValue(candidate.Key, out var updated)) updated.Confidence = candidate.Weight;
+            ApplyDelta(candidate.Key, order.SizeDelta, PositiveOr(candidate.Position.LastPrice, candidate.Position.EntryPrice), TakerFeeRate(candidate.Key), candidate.Reason);
+            if (_positions.TryGetValue(candidate.Key, out var updated))
+            {
+                updated.Confidence = candidate.Weight;
+                if (candidate.Context.TrailingStopActivation > 0 && candidate.Context.TrailingStopDistance > 0)
+                {
+                    updated.TrailingStopActivation = candidate.Context.TrailingStopActivation;
+                    updated.TrailingStopDistance = candidate.Context.TrailingStopDistance;
+                    updated.TrailingStopMinProfit = candidate.Context.TrailingStopMinProfit;
+                }
+            }
         }
         return orders;
     }
@@ -534,11 +575,14 @@ public sealed class PositionManager
             LotSize = metadata.LotSize,
             TickSize = metadata.TickSize,
             Leverage = leverage,
+            TrailingStopActivation = position.TrailingStopActivation,
+            TrailingStopDistance = position.TrailingStopDistance,
+            TrailingStopMinProfit = position.TrailingStopMinProfit,
             ReduceOnly = reduceOnly
         };
     }
 
-    private void ApplyDelta(string key, double delta, double price, double feeRate)
+    private void ApplyDelta(string key, double delta, double price, double feeRate, string reason)
     {
         if (!_positions.TryGetValue(key, out var position)) return;
         if (position.Size == 0 || Sign(position.Size) == Sign(delta))
@@ -553,16 +597,18 @@ public sealed class PositionManager
             position.Fees += fee;
             position.RealizedPnL -= fee;
             position.Size += delta;
+            position.ResetExcursion();
             return;
         }
         if (price > 0) position.LastPrice = price;
+        position.UpdateExcursion();
         var closing = Math.Min(Math.Abs(position.Size), Math.Abs(delta));
         var gross = RealizedGrossForQuantity(key, position, closing, price);
         var feeClose = FeeForQuantity(key, position, closing, price, feeRate);
         position.RealizedGross += gross;
         position.Fees += feeClose;
         position.RealizedPnL += gross - feeClose;
-        var closed = new ClosedTrade(position.Venue, position.Instrument, position.Side ?? Side.Buy, closing, position.EntryPrice, price, position.RealizedGross, position.Fees, position.RealizedPnL, DateTimeOffset.UtcNow);
+        var closed = new ClosedTrade(position.Venue, position.Instrument, position.Side ?? Side.Buy, closing, position.EntryPrice, price, position.PriceMove(), position.RealizedGross, position.Fees, position.RealizedPnL, position.MFE, position.MAE, reason, DateTimeOffset.UtcNow);
         var remaining = Math.Abs(delta) - closing;
         if (remaining <= 1e-9)
         {
@@ -582,6 +628,7 @@ public sealed class PositionManager
         position.RealizedGross = 0;
         position.Fees = FeeForQuantity(key, position, remaining, price, feeRate);
         position.RealizedPnL = -position.Fees;
+        position.ResetExcursion();
     }
 
     private double EffectiveMinOrderDelta() => Math.Max(_config.MinOrderDelta, 0) * MaxPortfolioMarginBudget();
@@ -600,6 +647,23 @@ public sealed class PositionManager
         var parts = key.Split(':', 2);
         var metadataMax = parts.Length == 2 ? _instruments.Instrument(parts[0], parts[1]).MaxLeverage : 0;
         return metadataMax > 0 && configured > 0 ? Math.Min(configured, metadataMax) : configured;
+    }
+    private (double Activation, double Distance, double MinProfit) TrailingConfigForSignal(string key, Signal signal)
+    {
+        var activation = signal.TrailingStopActivation;
+        var distance = signal.TrailingStopDistance;
+        var minProfit = signal.TrailingStopMinProfit;
+        if ((activation <= 0 || distance <= 0) && _config.Instruments.TryGetValue(key, out var cfg))
+        {
+            activation = cfg.TrailingStopActivation ?? 0;
+            distance = cfg.TrailingStopDistance ?? 0;
+            minProfit = cfg.TrailingStopMinProfit ?? 0;
+        }
+        if (activation <= 0 || distance <= 0) return (0, 0, 0);
+        var feeFloor = 2 * TakerFeeRate(key);
+        minProfit = Math.Max(minProfit, feeFloor);
+        if (activation < minProfit + 1e-9) activation = minProfit + Math.Min(distance, feeFloor);
+        return (Math.Max(activation, 0), Math.Max(distance, 0), Math.Max(minProfit, 0));
     }
     private static bool OrderMeetsInstrumentMinimum(Order order) => order.Quantity > 0 && (order.Reason is "closing" or "flip" || order.MinSize <= 0 || order.Quantity >= order.MinSize);
     private double SelectLeverage(string key, double confidence, double edge, double score)
@@ -628,9 +692,20 @@ public sealed class PositionManager
             MinLeverage = Math.Max(config.MinLeverage, 0),
             MaxLeverage = Math.Max(config.MaxLeverage, 0),
             AvailableMarginBuffer = Math.Clamp(config.AvailableMarginBuffer, 0, 0.95),
-            ExecutableMarginBuffer = Math.Clamp(config.ExecutableMarginBuffer, 0, 0.05)
+            ExecutableMarginBuffer = Math.Clamp(config.ExecutableMarginBuffer, 0, 0.05),
+            Instruments = config.Instruments.ToDictionary(item => item.Key, item => Normalize(item.Value))
         };
     }
+    private static InstrumentConfig Normalize(InstrumentConfig config) => config with
+    {
+        MakerFeeRate = config.MakerFeeRate is null ? null : Math.Max(config.MakerFeeRate.Value, 0),
+        TakerFeeRate = config.TakerFeeRate is null ? null : Math.Max(config.TakerFeeRate.Value, 0),
+        MinLeverage = config.MinLeverage is null ? null : Math.Max(config.MinLeverage.Value, 0),
+        MaxLeverage = config.MaxLeverage is null ? null : Math.Max(config.MaxLeverage.Value, 0),
+        TrailingStopActivation = config.TrailingStopActivation is null ? null : Math.Max(config.TrailingStopActivation.Value, 0),
+        TrailingStopDistance = config.TrailingStopDistance is null ? null : Math.Max(config.TrailingStopDistance.Value, 0),
+        TrailingStopMinProfit = config.TrailingStopMinProfit is null ? null : Math.Max(config.TrailingStopMinProfit.Value, 0)
+    };
     private static string Key(string venue, string instrument) => $"{venue}:{instrument}";
     private static double Clamp01(double value) => Math.Clamp(value, 0, 1);
     private static double SideSign(Side side) => side == Side.Buy ? 1 : -1;
@@ -640,6 +715,7 @@ public sealed class PositionManager
     private static double RoundToTick(double value, double tick) => value <= 0 || tick <= 0 ? value : Math.Round(value / tick) * tick;
     private static double ExpectedEdge(Signal signal) => Clamp01(signal.Confidence) * Math.Max(signal.TakeProfit, 0) - (1 - Clamp01(signal.Confidence)) * Math.Max(signal.StopLoss, 0);
     private static double FeeAdjustedExpectedEdge(Signal signal, double takerFeeRate) => ExpectedEdge(signal) - 2 * takerFeeRate;
+    private static string ExitReason(Position position, double price) => price <= 0 ? "" : position.TakeProfitTriggered(price) ? "take_profit" : position.StopLossTriggered(price) ? "stop_loss" : position.TrailingStopTriggered() ? "trailing_stop" : "";
     private static double OrderBudgetCost(Order order) => Math.Max(0, order.Margin) + Math.Max(0, order.EstimatedFee);
     private static double FeeValueForNotional(double notional, double feeRate) => notional <= 0 || feeRate <= 0 ? 0 : notional * feeRate;
     private static double InstrumentContractNotional(double price, InstrumentMetadata metadata) => price <= 0 ? 0 : price * PositiveOr(metadata.ContractValue, 1) * PositiveOr(metadata.ContractMultiplier, 1);
@@ -649,7 +725,7 @@ public sealed class PositionManager
     private static bool IsExposureReduction(double previousSize, double targetSize) => Math.Abs(previousSize) > 1e-9 && (Math.Abs(targetSize) <= 1e-9 || Sign(previousSize) != Sign(targetSize) || Math.Abs(targetSize) < Math.Abs(previousSize) - 1e-9);
     private static double BlendRisk(double current, double incoming, double gate) => current <= 0 ? incoming : incoming <= 0 ? current : current * (1 - Clamp01(gate)) + incoming * Clamp01(gate);
 
-    private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss);
+    private readonly record struct SignalContext(double Confidence, double Score, double ExpectedEdge, double TakeProfit, double StopLoss, double TrailingStopActivation, double TrailingStopDistance, double TrailingStopMinProfit);
     private readonly record struct ExecutableAllocation(double Quantity, double Margin, double Fee);
     private readonly record struct RebalanceCandidate(string Key, Position Position, double Delta, double Weight, SignalContext Context, string Reason);
 }
