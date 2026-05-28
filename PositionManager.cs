@@ -4,7 +4,7 @@ namespace Grexie.Signals.Client;
 public sealed class PositionManager
 {
     private readonly ISignalsEventSource? _client;
-    private readonly PositionManagerConfig _config;
+    private PositionManagerConfig _config;
     private readonly AssetManager _assets = new();
     private readonly InstrumentManager _instruments = new();
     private readonly Dictionary<string, Position> _positions = new();
@@ -53,6 +53,16 @@ public sealed class PositionManager
     public IReadOnlyList<Position> Positions() => _positions.Values.OrderBy(p => p.Venue).ThenBy(p => p.Instrument).ToArray();
     public IReadOnlyList<ClosedTrade> ClosedTrades() => _closedTrades.ToArray();
     public PositionManagerState State() => new(Positions(), ClosedTrades());
+
+    public void UpdateConfig(PositionManagerConfig config)
+    {
+        _config = Normalize(config with
+        {
+            Instruments = config.Instruments.Count > 0 ? config.Instruments : _config.Instruments,
+            InitialState = null,
+            Persist = config.Persist ?? _config.Persist
+        });
+    }
 
     public PositionStats Stats()
     {

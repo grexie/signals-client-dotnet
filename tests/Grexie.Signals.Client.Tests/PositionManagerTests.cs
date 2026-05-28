@@ -223,6 +223,57 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
+    public void UpdateConfigKeepsStateAndChangesLeverage()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            RebalanceInterval = TimeSpan.FromHours(1),
+            MinLeverage = 5,
+            MaxLeverage = 5
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        var opening = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Score = 1,
+            Price = 100
+        });
+        Assert.Equal(5, opening[0].Leverage, 9);
+
+        manager.UpdateConfig(PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            RebalanceInterval = TimeSpan.FromHours(1),
+            MinLeverage = 1,
+            MaxLeverage = 1
+        });
+        Assert.Single(manager.Positions());
+        var closing = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Score = -1,
+            Price = 99
+        });
+        Assert.True(closing[0].ReduceOnly);
+        Assert.Equal(1, closing[0].Leverage, 9);
+    }
+
+    [Fact]
     public void CreatesConcreteOrdersWithAssetAndInstrumentMetadata()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
