@@ -94,6 +94,88 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
+    public void ManagePositionsOnlyDoesNotOpenOrIncreaseExposure()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 0.10,
+            MinExpectedEdge = 0.01,
+            MinOrderDelta = 0,
+            MaxLeverage = 5
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+
+        var blockedOpen = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.9,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            ManagePositionsOnly = true
+        });
+        Assert.Empty(blockedOpen);
+        Assert.Empty(manager.Positions());
+
+        var opened = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.7,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100
+        });
+        Assert.Single(opened);
+        Assert.Equal("opening", opened[0].Reason);
+
+        var sameSide = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            ManagePositionsOnly = true
+        });
+        Assert.Empty(sameSide);
+
+        var closed = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.51,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99,
+            ManagePositionsOnly = true
+        });
+        Assert.Single(closed);
+        Assert.Equal("closing", closed[0].Reason);
+        Assert.Equal(0, closed[0].TargetSize, 9);
+
+        var blockedShort = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.51,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99,
+            ManagePositionsOnly = true
+        });
+        Assert.Empty(blockedShort);
+        Assert.Empty(manager.Positions());
+    }
+
+    [Fact]
     public void QuantizesEmittedTargetSizeToExecutableLots()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
