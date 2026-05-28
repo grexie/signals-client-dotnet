@@ -149,6 +149,8 @@ public sealed record PositionManagerConfig
     public double AvailableMarginBuffer { get; init; } = 0.10;
     public double ExecutableMarginBuffer { get; init; } = 0.001;
     public IReadOnlyDictionary<string, InstrumentConfig> Instruments { get; init; } = new Dictionary<string, InstrumentConfig>();
+    public PositionManagerState? InitialState { get; init; }
+    public Action<PositionManagerState>? Persist { get; init; }
 
     /// <summary>Server-compatible execution-policy defaults.</summary>
     public static PositionManagerConfig ProductionDefaults() => new();
@@ -270,6 +272,9 @@ public sealed record Order
 
 /// <summary>Closed realized trade snapshot.</summary>
 public sealed record ClosedTrade(string Venue, string Instrument, Side Side, double Size, double EntryPrice, double ExitPrice, double ExitMove, double RealizedGross, double Fees, double RealizedPnL, double MFE, double MAE, string ExitReason, DateTimeOffset ClosedAt);
+
+/// <summary>Durable runtime snapshot for hydrating a position manager after restart.</summary>
+public sealed record PositionManagerState(IReadOnlyList<Position> Positions, IReadOnlyList<ClosedTrade> ClosedTrades);
 
 public sealed record InstrumentPositionStats(string Venue, string Instrument, string SettlementCurrency, Side? Side, double Size, double Quantity, double Notional, double RealizedPnL, double UnrealizedPnL, double Fees, double RealizedPnLPercent, double UnrealizedPnLPercent, double TotalPnLPercent, double Leverage);
 

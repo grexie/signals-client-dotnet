@@ -14,6 +14,7 @@ public sealed class PositionManager
     {
         _client = client;
         _config = Normalize(config ?? PositionManagerConfig.ProductionDefaults());
+        HydrateState(_config.InitialState);
     }
 
     /// <summary>Consume attached client events and yield order recommendations.</summary>
@@ -33,6 +34,7 @@ public sealed class PositionManager
     {
         if (position.Leverage <= 0) position.Leverage = MinLeverage(Key(position.Venue, position.Instrument));
         _positions[Key(position.Venue, position.Instrument)] = position;
+        Persist();
     }
     public void UpdatePosition(Position position) => AddPosition(position);
     public void ReplacePositions(IEnumerable<Position> positions)
@@ -41,13 +43,16 @@ public sealed class PositionManager
         foreach (var position in positions)
         {
             if (string.IsNullOrWhiteSpace(position.Venue) || string.IsNullOrWhiteSpace(position.Instrument) || Math.Abs(position.Size) <= 1e-9) continue;
-            AddPosition(position);
+            if (position.Leverage <= 0) position.Leverage = MinLeverage(Key(position.Venue, position.Instrument));
+            _positions[Key(position.Venue, position.Instrument)] = position;
         }
+        Persist();
     }
     public AssetManager AssetManager => _assets;
     public InstrumentManager InstrumentManager => _instruments;
     public IReadOnlyList<Position> Positions() => _positions.Values.OrderBy(p => p.Venue).ThenBy(p => p.Instrument).ToArray();
     public IReadOnlyList<ClosedTrade> ClosedTrades() => _closedTrades.ToArray();
+    public PositionManagerState State() => new(Positions(), ClosedTrades());
 
     public PositionStats Stats()
     {
@@ -105,6 +110,7 @@ public sealed class PositionManager
         var order = OrderForDelta(key, position, delta, 0, 0, "closing", position.Confidence);
         if (!OrderMeetsInstrumentMinimum(order)) return Array.Empty<Order>();
         ApplyDelta(key, order.SizeDelta, PositiveOr(position.LastPrice, position.EntryPrice), TakerFeeRate(key), "closing");
+        Persist();
         return new[] { order };
     }
 
@@ -117,16 +123,25 @@ public sealed class PositionManager
         position.LastPrice = price;
         position.UpdateExcursion();
         var reason = ExitReason(position, price);
-        if (reason.Length == 0) return Array.Empty<Order>();
+        if (reason.Length == 0)
+        {
+            Persist();
+            return Array.Empty<Order>();
+        }
 
         var feeRate = reason == "take_profit" ? MakerFeeRate(key) : TakerFeeRate(key);
         var order = OrderForDelta(key, position, -position.Size, 0, 0, reason, position.Confidence);
         order.FeeRate = feeRate;
         order.EstimatedFee = FeeValueForNotional(order.Notional, feeRate);
         order.EstimatedFeeValue = order.Notional * feeRate;
-        if (!OrderMeetsInstrumentMinimum(order)) return Array.Empty<Order>();
+        if (!OrderMeetsInstrumentMinimum(order))
+        {
+            Persist();
+            return Array.Empty<Order>();
+        }
 
         ApplyDelta(key, order.SizeDelta, price, feeRate, reason);
+        Persist();
         return new[] { order };
     }
 
@@ -198,11 +213,29 @@ public sealed class PositionManager
             position.TrailingStopMinProfit = trailingStopMinProfit;
         }
         position.Leverage = SelectLeverage(key, targetConfidence, edge, signal.Score);
-        return Rebalance(new Dictionary<string, double> { [key] = targetSign }, new Dictionary<string, SignalContext>
+        var orders = Rebalance(new Dictionary<string, double> { [key] = targetSign }, new Dictionary<string, SignalContext>
         {
             [key] = new(targetConfidence, signal.Score, edge, signal.TakeProfit, signal.StopLoss, trailingStopActivation, trailingStopDistance, trailingStopMinProfit)
         });
+        Persist();
+        return orders;
     }
+
+    private void HydrateState(PositionManagerState? state)
+    {
+        if (state is null) return;
+        _positions.Clear();
+        foreach (var position in state.Positions)
+        {
+            if (string.IsNullOrWhiteSpace(position.Venue) || string.IsNullOrWhiteSpace(position.Instrument) || Math.Abs(position.Size) <= 1e-9) continue;
+            if (position.Leverage <= 0) position.Leverage = MinLeverage(Key(position.Venue, position.Instrument));
+            _positions[Key(position.Venue, position.Instrument)] = position;
+        }
+        _closedTrades.Clear();
+        _closedTrades.AddRange(state.ClosedTrades);
+    }
+
+    private void Persist() => _config.Persist?.Invoke(State());
 
     private IReadOnlyList<Order> Rebalance(Dictionary<string, double> sideOverrides, Dictionary<string, SignalContext> contexts)
     {

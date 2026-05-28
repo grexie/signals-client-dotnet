@@ -447,6 +447,42 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
+    public void PersistsAndHydratesTrailingStopState()
+    {
+        var snapshots = new List<PositionManagerState>();
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 1,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            Persist = snapshots.Add
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.50,
+            StopLoss = 0.20,
+            TrailingStopActivation = 0.02,
+            TrailingStopDistance = 0.01,
+            TrailingStopMinProfit = 0.001,
+            Price = 100
+        });
+        manager.UpdatePrice("okx", "BTC-USDT-SWAP", 104);
+
+        var latest = snapshots.Last();
+        var position = Assert.Single(latest.Positions);
+        Assert.Equal(0.02, position.TrailingStopActivation, 9);
+        Assert.True(position.MFE > 0.039);
+
+        var rehydrated = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with { InitialState = latest });
+        Assert.Equal(position.MFE, Assert.Single(rehydrated.Positions()).MFE);
+    }
+
+    [Fact]
     public void TrailingActivationIsAtLeastBreakeven()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
