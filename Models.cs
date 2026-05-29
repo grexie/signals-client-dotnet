@@ -143,6 +143,8 @@ public sealed record PositionManagerConfig
     public double MinOrderDelta { get; init; } = 0.20;
     public double MinPositionSizeRatio { get; init; } = 0.01;
     public TimeSpan RebalanceInterval { get; init; } = TimeSpan.FromHours(6);
+    public TimeSpan FlipFlopWindow { get; init; } = TimeSpan.FromMinutes(30);
+    public double SignalFlipMinConfidence { get; init; } = 0;
     public double MakerFeeRate { get; init; } = 0.0002;
     public double TakerFeeRate { get; init; } = 0.0005;
     public double MinLeverage { get; init; } = 1.0;

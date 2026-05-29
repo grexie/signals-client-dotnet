@@ -12,6 +12,7 @@ public sealed class PositionManagerTests
             MaxMarginRatio = 0.10,
             MinExpectedEdge = 0,
             MinOrderDelta = 0.20,
+            FlipFlopWindow = TimeSpan.Zero,
             MaxLeverage = 5
         });
         manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
@@ -65,6 +66,116 @@ public sealed class PositionManagerTests
         Assert.Single(openShort);
         Assert.Equal(Side.Sell, openShort[0].Side);
         Assert.Equal("opening", openShort[0].Reason);
+    }
+
+    [Fact]
+    public void SuppressesFlipFlopByDefault()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 0.10,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        var startedAt = DateTimeOffset.Parse("2026-05-29T10:00:00Z");
+
+        var opened = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.8,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            Timestamp = startedAt
+        });
+        Assert.Single(opened);
+
+        var strongFlip = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.99,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99.95,
+            Timestamp = startedAt.AddMinutes(5)
+        });
+        Assert.Empty(strongFlip);
+
+        var outsideWindow = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.99,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99.90,
+            Timestamp = startedAt.AddMinutes(31)
+        });
+        Assert.Single(outsideWindow);
+        Assert.Equal("flip", outsideWindow[0].Reason);
+        Assert.Equal(Side.Sell, outsideWindow[0].Side);
+    }
+
+    [Fact]
+    public void AllowsExplicitHighConfidenceFlipThreshold()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with
+        {
+            MaxMarginRatio = 0.10,
+            MinExpectedEdge = 0,
+            MinOrderDelta = 0,
+            FlipFlopWindow = TimeSpan.FromMinutes(30),
+            SignalFlipMinConfidence = 0.72
+        });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        var startedAt = DateTimeOffset.Parse("2026-05-29T10:00:00Z");
+
+        var opened = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 0.8,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 100,
+            Timestamp = startedAt
+        });
+        Assert.Single(opened);
+
+        var weakFlip = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.70,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99.95,
+            Timestamp = startedAt.AddMinutes(5)
+        });
+        Assert.Empty(weakFlip);
+
+        var strongFlip = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Sell,
+            Confidence = 0.72,
+            TakeProfit = 0.02,
+            StopLoss = 0.004,
+            Price = 99.90,
+            Timestamp = startedAt.AddMinutes(6)
+        });
+        Assert.Single(strongFlip);
+        Assert.Equal("flip", strongFlip[0].Reason);
+        Assert.Equal(Side.Sell, strongFlip[0].Side);
     }
 
     [Fact]
@@ -313,6 +424,7 @@ public sealed class PositionManagerTests
             MinExpectedEdge = 0,
             MinOrderDelta = 0,
             RebalanceInterval = TimeSpan.FromHours(1),
+            FlipFlopWindow = TimeSpan.Zero,
             MinLeverage = 5,
             MaxLeverage = 5
         });
@@ -336,6 +448,7 @@ public sealed class PositionManagerTests
             MinExpectedEdge = 0,
             MinOrderDelta = 0,
             RebalanceInterval = TimeSpan.FromHours(1),
+            FlipFlopWindow = TimeSpan.Zero,
             MinLeverage = 1,
             MaxLeverage = 1
         });

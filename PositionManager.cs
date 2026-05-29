@@ -197,6 +197,7 @@ public sealed class PositionManager
         {
             var isFlip = Sign(position.Size) != 0 && Sign(position.Size) != targetSign;
             var belowMinimum = !MeetsMinimumPositionSize(PositionMargin(key, position));
+            if (isFlip && ShouldSuppressFlipFlop(position, signal, now)) return Array.Empty<Order>();
             if (!isFlip && !belowMinimum && _config.RebalanceInterval > TimeSpan.Zero && position.LastSignalAt is not null && now < position.LastSignalAt + _config.RebalanceInterval) return Array.Empty<Order>();
         }
 
@@ -239,6 +240,14 @@ public sealed class PositionManager
         });
         Persist();
         return orders;
+    }
+
+    private bool ShouldSuppressFlipFlop(Position position, Signal signal, DateTimeOffset now)
+    {
+        if (signal.ManagePositionsOnly || _config.FlipFlopWindow <= TimeSpan.Zero) return false;
+        if (position.LastSignalAt is null) return false;
+        if (now >= position.LastSignalAt + _config.FlipFlopWindow) return false;
+        return _config.SignalFlipMinConfidence <= 0 || signal.Confidence + 1e-12 < _config.SignalFlipMinConfidence;
     }
 
     private void HydrateState(PositionManagerState? state)
@@ -746,6 +755,8 @@ public sealed class PositionManager
             MinExpectedEdge = Math.Max(config.MinExpectedEdge, 0),
             MinOrderDelta = Math.Clamp(config.MinOrderDelta, 0, 1),
             MinPositionSizeRatio = Math.Clamp(config.MinPositionSizeRatio, 0, 1),
+            FlipFlopWindow = config.FlipFlopWindow < TimeSpan.Zero ? TimeSpan.Zero : config.FlipFlopWindow,
+            SignalFlipMinConfidence = Math.Clamp(config.SignalFlipMinConfidence, 0, 1),
             MakerFeeRate = Math.Max(config.MakerFeeRate, 0),
             TakerFeeRate = Math.Max(config.TakerFeeRate, 0),
             MinLeverage = Math.Max(config.MinLeverage, 0),
