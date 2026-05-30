@@ -123,6 +123,31 @@ public sealed class PositionManagerTests
     }
 
     [Fact]
+    public void IgnoresSignalsAfterInstrumentRemoved()
+    {
+        var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults());
+        manager.AssetManager.UpdateAsset(new AssetSnapshot { Currency = "USDT", Available = 1000, Equity = 1000 });
+        manager.InstrumentManager.UpdateInstrument(new InstrumentMetadata { Venue = "okx", Instrument = "BTC-USDT-SWAP" });
+        manager.InstrumentManager.RemoveInstrument("okx", "BTC-USDT-SWAP");
+
+        var orders = manager.HandleSignal(new Signal
+        {
+            Venue = "okx",
+            Instrument = "BTC-USDT-SWAP",
+            Side = Side.Buy,
+            Confidence = 1,
+            TakeProfit = 0.03,
+            StopLoss = 0.01,
+            Score = 1,
+            Price = 100,
+            Timestamp = DateTimeOffset.Parse("2026-05-30T12:00:00Z")
+        });
+
+        Assert.Empty(orders);
+        Assert.False(manager.InstrumentManager.ContainsInstrument("okx", "BTC-USDT-SWAP"));
+    }
+
+    [Fact]
     public void AllowsExplicitHighConfidenceFlipThreshold()
     {
         var manager = new PositionManager(config: PositionManagerConfig.ProductionDefaults() with

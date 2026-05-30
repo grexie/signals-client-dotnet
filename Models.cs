@@ -129,6 +129,11 @@ public sealed class InstrumentManager
         if (!string.IsNullOrWhiteSpace(metadata.Venue) && !string.IsNullOrWhiteSpace(metadata.Instrument)) _instruments[$"{metadata.Venue}:{metadata.Instrument}"] = metadata;
     }
 
+    public void RemoveInstrument(string venue, string instrument)
+    {
+        if (!string.IsNullOrWhiteSpace(venue) && !string.IsNullOrWhiteSpace(instrument)) _instruments.Remove($"{venue}:{instrument}");
+    }
+
     public InstrumentMetadata Instrument(string venue, string instrument) => _instruments.GetValueOrDefault($"{venue}:{instrument}") ?? new InstrumentMetadata { Venue = venue, Instrument = instrument };
     public bool ContainsInstrument(string venue, string instrument) => _instruments.ContainsKey($"{venue}:{instrument}");
     public IReadOnlyList<InstrumentMetadata> Instruments() => _instruments.Values.OrderBy(i => i.Venue).ThenBy(i => i.Instrument).ToArray();
