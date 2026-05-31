@@ -7,7 +7,7 @@ Typed C# client package for Grexie Signals websocket subscriptions and productio
 Grexie Signals is a real-time crypto trading signal service that streams model-backed market signals with portfolio-aware risk, sizing, and execution context for builders, bots, and trading tools.
 
 ```sh
-dotnet add package Grexie.Signals.Client --version 0.1.18
+dotnet add package Grexie.Signals.Client --version 0.1.19
 ```
 
 ## Websocket Client

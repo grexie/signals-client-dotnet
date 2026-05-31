@@ -66,6 +66,9 @@ public sealed record SubscribedEvent(long SubscriptionId, string Venue, string I
 public sealed record UnsubscribedEvent(long? SubscriptionId, string? Venue, string? Instrument, string? Code, string? Message) : SignalsEvent("unsubscribed");
 public sealed record InfoEvent(long SubscriptionId, string Venue, string Instrument, string Stage, string Message, DateTimeOffset? Timestamp, bool Replay, DateTimeOffset? ReplayedAt) : SignalsEvent("info");
 public sealed record SignalEvent(long SubscriptionId, string Venue, string Instrument, Signal Signal, DateTimeOffset? Timestamp, bool Replay, DateTimeOffset? ReplayedAt) : SignalsEvent("signal");
+public sealed record CreateMarketOrderEvent(long SubscriptionId, string? IntentId, string? Action, string? Venue, string Instrument, string Side, string? OrderType, double ContractSize, double Leverage, bool ReduceOnly, double TakeProfitPrice, double StopLossPrice, double TakeProfit, double StopLoss, DateTimeOffset? Timestamp) : SignalsEvent("create-market-order");
+public sealed record UpdateTPSLEvent(long SubscriptionId, string? IntentId, string? Venue, string Instrument, string Side, double TakeProfitPrice, double StopLossPrice, double TakeProfit, double StopLoss, DateTimeOffset? Timestamp) : SignalsEvent("update-tpsl");
+public sealed record WithdrawEvent(long SubscriptionId, string? IntentId, string? Venue, string Currency, double Amount, DateTimeOffset? Timestamp) : SignalsEvent("withdraw");
 public sealed record ErrorEvent(string? Code, string? Message) : SignalsEvent("error");
 
 /// <summary>Per-instrument fee and leverage overrides.</summary>
@@ -83,11 +86,13 @@ public sealed record InstrumentConfig
 /// <summary>Account state for one settlement currency.</summary>
 public sealed record AssetSnapshot
 {
+    public string Venue { get; init; } = string.Empty;
     public required string Currency { get; init; }
     public double Cash { get; init; }
     public double Available { get; init; }
     public double Used { get; init; }
     public double Equity { get; init; }
+    public double MaxUsage { get; init; } = 1.0;
     public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
@@ -169,12 +174,15 @@ public sealed record Position
 {
     public string Venue { get; init; } = string.Empty;
     public string Instrument { get; init; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
     public double Size { get; set; }
     public double Confidence { get; set; }
     public double EntryPrice { get; set; }
     public double LastPrice { get; set; }
     public double TakeProfit { get; set; }
     public double StopLoss { get; set; }
+    public double TakeProfitPrice { get; set; }
+    public double StopLossPrice { get; set; }
     public double TrailingStopActivation { get; set; }
     public double TrailingStopDistance { get; set; }
     public double TrailingStopMinProfit { get; set; }
@@ -195,27 +203,29 @@ public sealed record Position
         return Size < 0 ? (EntryPrice - LastPrice) / EntryPrice : (LastPrice - EntryPrice) / EntryPrice;
     }
 
-    internal double TakeProfitPrice()
+    internal double ResolvedTakeProfitPrice()
     {
+        if (TakeProfitPrice > 0) return TakeProfitPrice;
         if (EntryPrice <= 0 || TakeProfit <= 0) return 0;
         return Size < 0 ? EntryPrice * (1 - TakeProfit) : EntryPrice * (1 + TakeProfit);
     }
 
-    internal double StopLossPrice()
+    internal double ResolvedStopLossPrice()
     {
+        if (StopLossPrice > 0) return StopLossPrice;
         if (EntryPrice <= 0 || StopLoss <= 0) return 0;
         return Size < 0 ? EntryPrice * (1 + StopLoss) : EntryPrice * (1 - StopLoss);
     }
 
     internal bool TakeProfitTriggered(double price)
     {
-        var target = TakeProfitPrice();
+        var target = ResolvedTakeProfitPrice();
         return target > 0 && (Size < 0 ? price <= target : price >= target);
     }
 
     internal bool StopLossTriggered(double price)
     {
-        var target = StopLossPrice();
+        var target = ResolvedStopLossPrice();
         return target > 0 && (Size < 0 ? price >= target : price <= target);
     }
 

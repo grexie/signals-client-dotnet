@@ -469,7 +469,7 @@ public sealed class PositionManager
         var asset = _assets.Asset(currency);
         if (asset is null) return portfolioBudget;
         if (asset.Available <= 0) return 0;
-        var budget = Math.Max(0, asset.Available);
+        var budget = Math.Max(0, asset.Available) * Math.Clamp(asset.MaxUsage <= 0 ? 1.0 : asset.MaxUsage, 0.0, 1.0);
         if (_config.AvailableMarginBuffer > 0) budget *= 1 - _config.AvailableMarginBuffer;
         return Math.Min(budget, portfolioBudget);
     }

@@ -38,4 +38,20 @@ public sealed class ProtocolTests
         Assert.Equal("forbidden", error.Code);
         Assert.Equal("no access", error.Message);
     }
+
+    [Fact]
+    public void ParsesOrderRouterEvents()
+    {
+        var tpsl = Assert.IsType<UpdateTPSLEvent>(SignalsEventParser.Parse("""
+        {"type":"update-tpsl","subscriptionId":12,"intentId":"intent_2","venue":"okx","instrument":"BTC-USDT-SWAP","side":"buy","takeProfitPrice":72100,"stopLossPrice":70050,"takeProfit":0.03,"stopLoss":0.0007}
+        """));
+        Assert.Equal(72100, tpsl.TakeProfitPrice);
+        Assert.Equal(70050, tpsl.StopLossPrice);
+
+        var withdraw = Assert.IsType<WithdrawEvent>(SignalsEventParser.Parse("""
+        {"type":"withdraw","subscriptionId":12,"intentId":"withdraw_1","venue":"okx","currency":"USDT","amount":42}
+        """));
+        Assert.Equal("USDT", withdraw.Currency);
+        Assert.Equal(42, withdraw.Amount);
+    }
 }

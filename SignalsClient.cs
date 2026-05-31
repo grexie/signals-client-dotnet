@@ -62,6 +62,42 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsEventSource
         return SendAsync(new { type = "subscribe", venue, instrument }, cancellationToken);
     }
 
+    /// <summary>Subscribe to one Bollinger-router basket.</summary>
+    public Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, object? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "subscribe", venue, instruments, mode, risk, profitWithdrawRatio, assets, positions }, cancellationToken);
+    }
+
+    public Task UpdateAssetAsync(long subscriptionId, AssetSnapshot asset, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "update-asset", subscriptionId, asset.Venue, asset.Currency, asset.Cash, asset.Available, asset.Used, asset.Equity, asset.MaxUsage }, cancellationToken);
+    }
+
+    public Task UpdatePositionAsync(long subscriptionId, Position position, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "update-position", subscriptionId, position.Venue, position.Instrument, side = position.Side?.ToString().ToLowerInvariant(), position.Status, size = Math.Abs(position.Size), position.EntryPrice, markPrice = position.LastPrice, position.Leverage, position.TakeProfitPrice, position.StopLossPrice }, cancellationToken);
+    }
+
+    public Task AddInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "add-instrument", subscriptionId, instrument }, cancellationToken);
+    }
+
+    public Task RemoveInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "remove-instrument", subscriptionId, instrument }, cancellationToken);
+    }
+
+    public Task UpdateConfigAsync(long subscriptionId, double profitWithdrawRatio, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "update-config", subscriptionId, profitWithdrawRatio }, cancellationToken);
+    }
+
+    public Task ScheduleWithdrawalAsync(long subscriptionId, string currency, double amount, string? venue = null, string? reason = null, CancellationToken cancellationToken = default)
+    {
+        return SendAsync(new { type = "schedule-withdrawal", subscriptionId, venue, currency, amount, reason }, cancellationToken);
+    }
+
     /// <summary>Unsubscribe by server subscription id.</summary>
     public Task UnsubscribeAsync(long subscriptionId, CancellationToken cancellationToken = default)
     {
@@ -239,6 +275,9 @@ public static class SignalsEventParser
             "unsubscribed" => new UnsubscribedEvent(root.GetNullableInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument"), root.GetStringOrNull("code"), root.GetStringOrNull("message")),
             "info" => new InfoEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, root.GetStringOrNull("stage") ?? string.Empty, root.GetStringOrNull("message") ?? string.Empty, root.GetDateTimeOffsetOrNull("timestamp"), root.GetBoolOrDefault("replay"), root.GetDateTimeOffsetOrNull("replayedAt")),
             "signal" => ParseSignalEvent(root),
+            "create-market-order" => new CreateMarketOrderEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("intentId"), root.GetStringOrNull("action"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument") ?? string.Empty, root.GetStringOrNull("side") ?? string.Empty, root.GetStringOrNull("orderType"), root.GetDoubleOrDefault("contractSize"), root.GetDoubleOrDefault("leverage"), root.GetBoolOrDefault("reduceOnly"), root.GetDoubleOrDefault("takeProfitPrice"), root.GetDoubleOrDefault("stopLossPrice"), root.GetDoubleOrDefault("takeProfit"), root.GetDoubleOrDefault("stopLoss"), root.GetDateTimeOffsetOrNull("timestamp")),
+            "update-tpsl" => new UpdateTPSLEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("intentId"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument") ?? string.Empty, root.GetStringOrNull("side") ?? string.Empty, root.GetDoubleOrDefault("takeProfitPrice"), root.GetDoubleOrDefault("stopLossPrice"), root.GetDoubleOrDefault("takeProfit"), root.GetDoubleOrDefault("stopLoss"), root.GetDateTimeOffsetOrNull("timestamp")),
+            "withdraw" => new WithdrawEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("intentId"), root.GetStringOrNull("venue"), root.GetStringOrNull("currency") ?? string.Empty, root.GetDoubleOrDefault("amount"), root.GetDateTimeOffsetOrNull("timestamp")),
             "error" => new ErrorEvent(root.GetStringOrNull("code"), root.GetStringOrNull("message")),
             _ => throw new InvalidOperationException($"unsupported websocket event type {type}")
         };
@@ -288,6 +327,11 @@ internal static class JsonElementExtensions
     public static bool GetBoolOrDefault(this JsonElement element, string property)
     {
         return element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.True;
+    }
+
+    public static double GetDoubleOrDefault(this JsonElement element, string property)
+    {
+        return element.TryGetProperty(property, out var value) && value.TryGetDouble(out var number) ? number : 0;
     }
 
     public static DateTimeOffset? GetDateTimeOffsetOrNull(this JsonElement element, string property)
