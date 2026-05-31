@@ -32,6 +32,12 @@ public sealed class ProtocolTests
         Assert.True(info.Replay);
         Assert.NotNull(info.ReplayedAt);
 
+        var backtest = Assert.IsType<BacktestEvent>(SignalsEventParser.Parse("""
+        {"type":"backtest","subscriptionId":3,"venue":"okx","instrument":"BASKET:1","timestamp":"2026-05-31T17:00:00Z","backtest":{"accepted":true,"candidate":{"total":0.12}}}
+        """));
+        Assert.Equal(3, backtest.SubscriptionId);
+        Assert.True(backtest.Backtest.GetProperty("accepted").GetBoolean());
+
         var error = Assert.IsType<ErrorEvent>(SignalsEventParser.Parse("""
         {"type":"error","code":"forbidden","message":"no access"}
         """));
