@@ -256,6 +256,8 @@ public sealed class SignalsManager
     {
         SubscribedEvent sub => sub.SubscriptionId,
         UnsubscribedEvent unsub => unsub.SubscriptionId ?? 0,
+        BasketUpdatedEvent basketUpdated => basketUpdated.SubscriptionId,
+        OrderRouterForwardedEvent forwarded => forwarded.SubscriptionId,
         InfoEvent info => info.SubscriptionId,
         BacktestEvent backtest => backtest.SubscriptionId,
         SignalEvent signal => signal.SubscriptionId,

@@ -48,6 +48,17 @@ public sealed class ProtocolTests
     [Fact]
     public void ParsesOrderRouterEvents()
     {
+        var basketUpdated = Assert.IsType<BasketUpdatedEvent>(SignalsEventParser.Parse("""
+        {"type":"basket_updated","subscriptionId":12,"venue":"okx","message":"active"}
+        """));
+        Assert.Equal(12, basketUpdated.SubscriptionId);
+        Assert.Equal("okx", basketUpdated.Venue);
+
+        var forwarded = Assert.IsType<OrderRouterForwardedEvent>(SignalsEventParser.Parse("""
+        {"type":"order_router_forwarded","subscriptionId":12}
+        """));
+        Assert.Equal(12, forwarded.SubscriptionId);
+
         var order = Assert.IsType<CreateMarketOrderEvent>(SignalsEventParser.Parse("""
         {"type":"create-market-order","subscriptionId":12,"intentId":"intent_1","reason":"preempted_by_better_route","venue":"okx","instrument":"BTC-USDT-SWAP","side":"buy","contractSize":3,"margin":125.5,"leverage":1.46,"confidence":0.73}
         """));
@@ -67,5 +78,13 @@ public sealed class ProtocolTests
         """));
         Assert.Equal("USDT", withdraw.Currency);
         Assert.Equal(42, withdraw.Amount);
+    }
+
+    [Fact]
+    public void IgnoresBasketStateFrames()
+    {
+        Assert.True(SignalsEventParser.IsIgnored("""
+        {"type":"basket_state","subscriptionId":12,"venue":"okx","message":"active"}
+        """));
     }
 }

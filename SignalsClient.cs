@@ -293,20 +293,28 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
 
     private async Task<SignalsEvent?> ReceiveFromSocketAsync(CancellationToken cancellationToken)
     {
-        var buffer = new ArraySegment<byte>(new byte[64 * 1024]);
-        using var stream = new MemoryStream();
-        WebSocketReceiveResult result;
-        do
+        while (true)
         {
-            result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
+            var buffer = new ArraySegment<byte>(new byte[64 * 1024]);
+            using var stream = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
             {
-                return null;
+                result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    return null;
+                }
+                stream.Write(buffer.Array!, buffer.Offset, result.Count);
             }
-            stream.Write(buffer.Array!, buffer.Offset, result.Count);
+            while (!result.EndOfMessage);
+            var raw = Encoding.UTF8.GetString(stream.ToArray());
+            if (SignalsEventParser.IsIgnored(raw))
+            {
+                continue;
+            }
+            return SignalsEventParser.Parse(raw);
         }
-        while (!result.EndOfMessage);
-        return SignalsEventParser.Parse(Encoding.UTF8.GetString(stream.ToArray()));
     }
 
     private void Publish(SignalsEvent ev)
@@ -353,6 +361,8 @@ public static class SignalsEventParser
             "ready" => new ReadyEvent(root.GetString("message") ?? string.Empty),
             "subscribed" => new SubscribedEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty),
             "unsubscribed" => new UnsubscribedEvent(root.GetNullableInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument"), root.GetStringOrNull("code"), root.GetStringOrNull("message")),
+            "basket_updated" => new BasketUpdatedEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("basketId"), root.GetStringOrNull("message")),
+            "order_router_forwarded" => new OrderRouterForwardedEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("basketId"), root.GetStringOrNull("message")),
             "info" => new InfoEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, root.GetStringOrNull("stage") ?? string.Empty, root.GetStringOrNull("message") ?? string.Empty, root.GetDateTimeOffsetOrNull("timestamp"), root.GetBoolOrDefault("replay"), root.GetDateTimeOffsetOrNull("replayedAt")),
             "backtest" => new BacktestEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, root.TryGetProperty("backtest", out var backtest) ? backtest.Clone() : JsonSerializer.Deserialize<JsonElement>("{}"), root.GetDateTimeOffsetOrNull("timestamp")),
             "signal" => ParseSignalEvent(root),
@@ -362,6 +372,19 @@ public static class SignalsEventParser
             "error" => new ErrorEvent(root.GetStringOrNull("code"), root.GetStringOrNull("message")),
             _ => throw new InvalidOperationException($"unsupported websocket event type {type}")
         };
+    }
+
+    public static bool IsIgnored(string rawJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            return document.RootElement.GetStringOrNull("type") == "basket_state";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static SignalEvent ParseSignalEvent(JsonElement root)
