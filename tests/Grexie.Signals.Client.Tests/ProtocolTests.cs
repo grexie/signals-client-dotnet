@@ -49,9 +49,12 @@ public sealed class ProtocolTests
     public void ParsesOrderRouterEvents()
     {
         var order = Assert.IsType<CreateMarketOrderEvent>(SignalsEventParser.Parse("""
-        {"type":"create-market-order","subscriptionId":12,"intentId":"intent_1","reason":"preempted_by_better_route","venue":"okx","instrument":"BTC-USDT-SWAP","side":"buy","contractSize":3}
+        {"type":"create-market-order","subscriptionId":12,"intentId":"intent_1","reason":"preempted_by_better_route","venue":"okx","instrument":"BTC-USDT-SWAP","side":"buy","contractSize":3,"margin":125.5,"leverage":1.46,"confidence":0.73}
         """));
         Assert.Equal("preempted_by_better_route", order.Reason);
+        Assert.Equal(125.5, order.Margin);
+        Assert.Equal(1.46, order.Leverage);
+        Assert.Equal(0.73, order.Confidence);
 
         var tpsl = Assert.IsType<UpdateTPSLEvent>(SignalsEventParser.Parse("""
         {"type":"update-tpsl","subscriptionId":12,"intentId":"intent_2","venue":"okx","instrument":"BTC-USDT-SWAP","side":"buy","takeProfitPrice":72100,"stopLossPrice":70050,"takeProfit":0.03,"stopLoss":0.0007}
