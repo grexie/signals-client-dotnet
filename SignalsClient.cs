@@ -36,6 +36,8 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
     }
 
     /// <summary>Create a client using a complete websocket URI.</summary>
+    /// <param name="token">Bearer token used for websocket authentication.</param>
+    /// <param name="uri">Complete websocket URI.</param>
     public SignalsClient(SignalsWebSocketToken token, Uri uri)
     {
         _token = token;
@@ -57,42 +59,81 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
     }
 
     /// <summary>Subscribe to one venue/instrument pair.</summary>
+    /// <param name="venue">Venue code.</param>
+    /// <param name="instrument">Instrument symbol.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task SubscribeAsync(string venue, string instrument, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "subscribe", venue, instrument }, cancellationToken);
     }
 
     /// <summary>Subscribe to one Bollinger-router basket.</summary>
-    public Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, object? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default)
+    /// <param name="venue">Venue code.</param>
+    /// <param name="instruments">Basket instruments.</param>
+    /// <param name="risk">Initial router risk configuration.</param>
+    /// <param name="profitWithdrawRatio">Top-level profit withdrawal ratio.</param>
+    /// <param name="assets">Optional account snapshots.</param>
+    /// <param name="positions">Optional position snapshots.</param>
+    /// <param name="mode">Optional router mode.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
+    public Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, RiskConfig? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default)
     {
-        return SendAsync(new { type = "subscribe", venue, instruments, mode, risk, profitWithdrawRatio, assets, positions }, cancellationToken);
+        return SendAsync(new { type = "subscribe", venue, instruments, mode, risk = NormalizeRisk(risk), profitWithdrawRatio, assets, positions }, cancellationToken);
     }
 
+    /// <summary>Publish an account asset snapshot.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="asset">Asset snapshot to publish.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task UpdateAssetAsync(long subscriptionId, AssetSnapshot asset, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "update-asset", subscriptionId, asset.Venue, asset.Currency, asset.Cash, asset.Available, asset.Used, asset.Equity, asset.MaxUsage }, cancellationToken);
     }
 
+    /// <summary>Publish a venue position snapshot.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="position">Position snapshot to publish.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task UpdatePositionAsync(long subscriptionId, Position position, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "update-position", subscriptionId, position.Venue, position.Instrument, side = position.Side?.ToString().ToLowerInvariant(), position.Status, size = Math.Abs(position.Size), position.EntryPrice, markPrice = position.LastPrice, position.Margin, position.Leverage, position.TakeProfitPrice, position.StopLossPrice }, cancellationToken);
     }
 
+    /// <summary>Add an instrument to a live basket subscription.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="instrument">Instrument symbol to add.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task AddInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "add-instrument", subscriptionId, instrument }, cancellationToken);
     }
 
+    /// <summary>Remove an instrument from a live basket subscription.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="instrument">Instrument symbol to remove.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task RemoveInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "remove-instrument", subscriptionId, instrument }, cancellationToken);
     }
 
-    public Task UpdateConfigAsync(long subscriptionId, double profitWithdrawRatio, CancellationToken cancellationToken = default)
+    /// <summary>Send a runtime router config patch.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="config">Runtime config patch to send.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
+    public Task UpdateConfigAsync(long subscriptionId, RuntimeConfig config, CancellationToken cancellationToken = default)
     {
-        return SendAsync(new { type = "update-config", subscriptionId, profitWithdrawRatio }, cancellationToken);
+        var next = NormalizeRuntime(config);
+        return SendAsync(new { type = "update-config", subscriptionId, next.MaxMarginRatio, next.MinLotHaircutRatio, next.MaxConcurrentPositions, next.MaxDrawdown, next.SwitchBuffer, next.MinLeverage, next.MaxLeverage, next.ProfitWithdrawRatio }, cancellationToken);
     }
 
+    /// <summary>Schedule a withdrawal request for a router subscription.</summary>
+    /// <param name="subscriptionId">Server subscription id.</param>
+    /// <param name="currency">Settlement currency to withdraw.</param>
+    /// <param name="amount">Currency amount to withdraw.</param>
+    /// <param name="venue">Optional venue override.</param>
+    /// <param name="reason">Optional user-facing reason.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task ScheduleWithdrawalAsync(long subscriptionId, string currency, double amount, string? venue = null, string? reason = null, CancellationToken cancellationToken = default)
     {
         return SendAsync(new { type = "schedule-withdrawal", subscriptionId, venue, currency, amount, reason }, cancellationToken);
@@ -188,6 +229,45 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
         var json = JsonSerializer.Serialize(payload, _json);
         return _socket.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, cancellationToken);
     }
+
+    private static RiskConfig NormalizeRisk(RiskConfig? risk)
+    {
+        risk ??= new RiskConfig();
+        var maxLeverage = Math.Max(0, double.IsFinite(risk.MaxLeverage) ? risk.MaxLeverage : 0);
+        var minLeverage = Math.Max(0, double.IsFinite(risk.MinLeverage) ? risk.MinLeverage : 0);
+        if (maxLeverage > 0 && minLeverage > maxLeverage) minLeverage = maxLeverage;
+        return risk with
+        {
+            MaxMarginRatio = Clamp01(risk.MaxMarginRatio > 0 ? risk.MaxMarginRatio : 1),
+            MinLotHaircutRatio = Math.Max(0, double.IsFinite(risk.MinLotHaircutRatio) ? risk.MinLotHaircutRatio : 0),
+            MaxConcurrentPositions = Math.Max(0, risk.MaxConcurrentPositions),
+            MaxDrawdown = Math.Max(0, double.IsFinite(risk.MaxDrawdown) ? risk.MaxDrawdown : 0),
+            SwitchBuffer = Math.Max(0, double.IsFinite(risk.SwitchBuffer) ? risk.SwitchBuffer : 0),
+            MinLeverage = minLeverage,
+            MaxLeverage = maxLeverage,
+            ProfitWithdrawRatio = Clamp01(risk.ProfitWithdrawRatio)
+        };
+    }
+
+    private static RuntimeConfig NormalizeRuntime(RuntimeConfig config)
+    {
+        var maxLeverage = Math.Max(0, double.IsFinite(config.MaxLeverage) ? config.MaxLeverage : 0);
+        var minLeverage = Math.Max(0, double.IsFinite(config.MinLeverage) ? config.MinLeverage : 0);
+        if (maxLeverage > 0 && minLeverage > maxLeverage) minLeverage = maxLeverage;
+        return config with
+        {
+            MaxMarginRatio = Clamp01(config.MaxMarginRatio),
+            MinLotHaircutRatio = Math.Max(0, double.IsFinite(config.MinLotHaircutRatio) ? config.MinLotHaircutRatio : 0),
+            MaxConcurrentPositions = Math.Max(0, config.MaxConcurrentPositions),
+            MaxDrawdown = Math.Max(0, double.IsFinite(config.MaxDrawdown) ? config.MaxDrawdown : 0),
+            SwitchBuffer = Math.Max(0, double.IsFinite(config.SwitchBuffer) ? config.SwitchBuffer : 0),
+            MinLeverage = minLeverage,
+            MaxLeverage = maxLeverage,
+            ProfitWithdrawRatio = Clamp01(config.ProfitWithdrawRatio)
+        };
+    }
+
+    private static double Clamp01(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 1) : 0;
 
     private async Task ReadLoopAsync(CancellationToken cancellationToken)
     {

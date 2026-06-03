@@ -125,16 +125,44 @@ public sealed record Position
 
 public sealed record RiskConfig
 {
+    /// <summary>Fraction of account cash the router may reserve for active positions.</summary>
     public double MaxMarginRatio { get; init; }
+    /// <summary>Extra cash buffer applied to lot margin and fees before orders are allowed.</summary>
+    public double MinLotHaircutRatio { get; init; }
+    /// <summary>Maximum simultaneous active positions; zero leaves it unset.</summary>
     public int MaxConcurrentPositions { get; init; }
+    /// <summary>Optional drawdown guard; zero leaves it unset.</summary>
     public double MaxDrawdown { get; init; }
+    /// <summary>Router score buffer required before switching instruments.</summary>
     public double SwitchBuffer { get; init; }
+    /// <summary>Minimum leverage the router may request; zero leaves it unset.</summary>
     public double MinLeverage { get; init; }
+    /// <summary>Maximum leverage the router may request; zero leaves it unset.</summary>
     public double MaxLeverage { get; init; }
+    /// <summary>Fraction of profits eligible for withdrawal events.</summary>
     public double ProfitWithdrawRatio { get; init; }
 }
 
-public sealed record RuntimeConfig(double ProfitWithdrawRatio = 0);
+/// <summary>Runtime router risk patch sent after subscription.</summary>
+public sealed record RuntimeConfig
+{
+    /// <summary>Runtime max margin ratio; zero means no change.</summary>
+    public double MaxMarginRatio { get; init; }
+    /// <summary>Runtime lot haircut ratio; zero means no change.</summary>
+    public double MinLotHaircutRatio { get; init; }
+    /// <summary>Runtime max concurrent positions; zero means no change.</summary>
+    public int MaxConcurrentPositions { get; init; }
+    /// <summary>Runtime max drawdown; zero means no change.</summary>
+    public double MaxDrawdown { get; init; }
+    /// <summary>Runtime switch buffer; zero means no change.</summary>
+    public double SwitchBuffer { get; init; }
+    /// <summary>Runtime min leverage; zero means no change.</summary>
+    public double MinLeverage { get; init; }
+    /// <summary>Runtime max leverage; zero means no change.</summary>
+    public double MaxLeverage { get; init; }
+    /// <summary>Current profit withdrawal ratio to send.</summary>
+    public double ProfitWithdrawRatio { get; init; }
+}
 public sealed record WithdrawalRequest(string Currency, double Amount, string? Venue = null, string? Reason = null);
 public sealed record SignalsManagerState(IReadOnlyList<AssetSnapshot>? Assets = null, IReadOnlyList<Position>? Positions = null);
 public sealed record SignalsManagerConfig

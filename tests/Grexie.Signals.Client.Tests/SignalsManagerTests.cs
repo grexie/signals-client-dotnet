@@ -22,6 +22,8 @@ public sealed class SignalsManagerTests
         await manager.RunAsync();
 
         Assert.Equal("subscribe", client.Sent[0]["type"]);
+        Assert.Equal(1, ((RiskConfig)client.Sent[0]["risk"]).MaxMarginRatio);
+        Assert.Equal(0, ((RiskConfig)client.Sent[0]["risk"]).MinLotHaircutRatio);
         Assert.True(client.Sent.Any(item => (string)item["type"] == "update-asset" && (long)item["subscriptionId"] == 9));
         Assert.True(client.Sent.Any(item => (string)item["type"] == "update-position" && (long)item["subscriptionId"] == 9));
         var intent = await manager.Intents.Reader.ReadAsync();
@@ -60,9 +62,9 @@ internal sealed class FakeClient(params SignalsEvent[] events) : ISignalsManager
         }
     }
 
-    public Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, object? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default)
+    public Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, RiskConfig? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default)
     {
-        Sent.Add(new Dictionary<string, object> { ["type"] = "subscribe", ["venue"] = venue, ["instruments"] = instruments, ["assets"] = assets ?? Array.Empty<AssetSnapshot>(), ["positions"] = positions ?? Array.Empty<Position>() });
+        Sent.Add(new Dictionary<string, object> { ["type"] = "subscribe", ["venue"] = venue, ["instruments"] = instruments, ["risk"] = risk ?? new RiskConfig(), ["assets"] = assets ?? Array.Empty<AssetSnapshot>(), ["positions"] = positions ?? Array.Empty<Position>() });
         return Task.CompletedTask;
     }
 
@@ -90,9 +92,9 @@ internal sealed class FakeClient(params SignalsEvent[] events) : ISignalsManager
         return Task.CompletedTask;
     }
 
-    public Task UpdateConfigAsync(long subscriptionId, double profitWithdrawRatio, CancellationToken cancellationToken = default)
+    public Task UpdateConfigAsync(long subscriptionId, RuntimeConfig config, CancellationToken cancellationToken = default)
     {
-        Sent.Add(new Dictionary<string, object> { ["type"] = "update-config", ["subscriptionId"] = subscriptionId, ["profitWithdrawRatio"] = profitWithdrawRatio });
+        Sent.Add(new Dictionary<string, object> { ["type"] = "update-config", ["subscriptionId"] = subscriptionId, ["config"] = config });
         return Task.CompletedTask;
     }
 

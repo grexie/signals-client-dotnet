@@ -4,12 +4,12 @@ namespace Grexie.Signals.Client;
 
 public interface ISignalsManagerClient : ISignalsEventSource
 {
-    Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, object? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default);
+    Task SubscribeBasketAsync(string venue, IReadOnlyList<string> instruments, RiskConfig? risk = null, double profitWithdrawRatio = 0, IReadOnlyList<AssetSnapshot>? assets = null, IReadOnlyList<Position>? positions = null, string? mode = null, CancellationToken cancellationToken = default);
     Task UpdateAssetAsync(long subscriptionId, AssetSnapshot asset, CancellationToken cancellationToken = default);
     Task UpdatePositionAsync(long subscriptionId, Position position, CancellationToken cancellationToken = default);
     Task AddInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default);
     Task RemoveInstrumentAsync(long subscriptionId, string instrument, CancellationToken cancellationToken = default);
-    Task UpdateConfigAsync(long subscriptionId, double profitWithdrawRatio, CancellationToken cancellationToken = default);
+    Task UpdateConfigAsync(long subscriptionId, RuntimeConfig config, CancellationToken cancellationToken = default);
     Task ScheduleWithdrawalAsync(long subscriptionId, string currency, double amount, string? venue = null, string? reason = null, CancellationToken cancellationToken = default);
     Task UnsubscribeAsync(long subscriptionId, CancellationToken cancellationToken = default);
 }
@@ -24,6 +24,10 @@ public sealed class SignalsManager
     private readonly Dictionary<string, AssetSnapshot> _assets = new();
     private readonly Dictionary<string, Position> _positions = new();
 
+    /// <summary>Create a manager for one server-managed router basket.</summary>
+    /// <param name="client">Transport used to communicate with Signals.</param>
+    /// <param name="state">Optional durable state from a previous run.</param>
+    /// <param name="config">Basket subscription configuration.</param>
     public SignalsManager(ISignalsManagerClient client, SignalsManagerState? state = null, SignalsManagerConfig? config = null)
     {
         _client = client;
@@ -41,6 +45,8 @@ public sealed class SignalsManager
 
     public long SubscriptionId => _subscriptionId;
 
+    /// <summary>Subscribe, process websocket events until the stream ends, then unsubscribe.</summary>
+    /// <param name="cancellationToken">Cancellation token for the run loop.</param>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         await SubscribeAsync(cancellationToken).ConfigureAwait(false);
@@ -61,11 +67,16 @@ public sealed class SignalsManager
         }
     }
 
+    /// <summary>Subscribe the configured basket and send current snapshots.</summary>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task SubscribeAsync(CancellationToken cancellationToken = default)
     {
         return _client.SubscribeBasketAsync(_config.Venue, _config.Instruments, _config.Risk, _config.ProfitWithdrawRatio, Assets(), Positions(), _config.Mode, cancellationToken);
     }
 
+    /// <summary>Record and, once subscribed, send an account asset snapshot.</summary>
+    /// <param name="asset">Asset snapshot to record.</param>
+    /// <param name="cancellationToken">Cancellation token for the optional send.</param>
     public async Task UpdateAssetAsync(AssetSnapshot asset, CancellationToken cancellationToken = default)
     {
         var next = RecordAsset(asset);
@@ -75,6 +86,9 @@ public sealed class SignalsManager
         }
     }
 
+    /// <summary>Record and, once subscribed, send a venue position snapshot.</summary>
+    /// <param name="position">Position snapshot to record.</param>
+    /// <param name="cancellationToken">Cancellation token for the optional send.</param>
     public async Task UpdatePositionAsync(Position position, CancellationToken cancellationToken = default)
     {
         var next = RecordPosition(position);
@@ -84,6 +98,9 @@ public sealed class SignalsManager
         }
     }
 
+    /// <summary>Add an instrument locally and to the live subscription.</summary>
+    /// <param name="instrument">Instrument symbol to add.</param>
+    /// <param name="cancellationToken">Cancellation token for the optional send.</param>
     public async Task AddInstrumentAsync(string instrument, CancellationToken cancellationToken = default)
     {
         var normalized = NormalizeInstrument(instrument);
@@ -92,6 +109,9 @@ public sealed class SignalsManager
         if (_subscriptionId > 0) await _client.AddInstrumentAsync(_subscriptionId, normalized, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Remove an instrument locally and from the live subscription.</summary>
+    /// <param name="instrument">Instrument symbol to remove.</param>
+    /// <param name="cancellationToken">Cancellation token for the optional send.</param>
     public async Task RemoveInstrumentAsync(string instrument, CancellationToken cancellationToken = default)
     {
         var normalized = NormalizeInstrument(instrument);
@@ -99,18 +119,28 @@ public sealed class SignalsManager
         if (_subscriptionId > 0) await _client.RemoveInstrumentAsync(_subscriptionId, normalized, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Apply and optionally send a runtime router config patch.</summary>
+    /// <param name="config">Runtime config patch.</param>
+    /// <param name="cancellationToken">Cancellation token for the optional send.</param>
     public async Task UpdateConfigAsync(RuntimeConfig config, CancellationToken cancellationToken = default)
     {
-        _config = _config with { ProfitWithdrawRatio = Clamp01(config.ProfitWithdrawRatio) };
-        if (_subscriptionId > 0) await _client.UpdateConfigAsync(_subscriptionId, _config.ProfitWithdrawRatio, cancellationToken).ConfigureAwait(false);
+        var runtime = NormalizeRuntime(config);
+        _config = _config with { Risk = ApplyRuntimeConfig(_config.Risk ?? new RiskConfig(), runtime), ProfitWithdrawRatio = runtime.ProfitWithdrawRatio };
+        if (_subscriptionId > 0) await _client.UpdateConfigAsync(_subscriptionId, runtime, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Schedule a withdrawal through the live router subscription.</summary>
+    /// <param name="withdrawal">Withdrawal request to send.</param>
+    /// <param name="cancellationToken">Cancellation token for the send.</param>
     public Task ScheduleWithdrawalAsync(WithdrawalRequest withdrawal, CancellationToken cancellationToken = default)
     {
         if (_subscriptionId <= 0) throw new InvalidOperationException("basket is not subscribed");
         return _client.ScheduleWithdrawalAsync(_subscriptionId, withdrawal.Currency.ToUpperInvariant(), withdrawal.Amount, NormalizeVenue(withdrawal.Venue ?? _config.Venue), withdrawal.Reason, cancellationToken);
     }
 
+    /// <summary>Apply one typed websocket event to manager state.</summary>
+    /// <param name="ev">Event to apply.</param>
+    /// <param name="cancellationToken">Cancellation token for queue writes and snapshot sends.</param>
     public async Task<bool> HandleEventAsync(SignalsEvent ev, CancellationToken cancellationToken = default)
     {
         if (!AcceptsEvent(ev)) return false;
@@ -145,12 +175,17 @@ public sealed class SignalsManager
         return true;
     }
 
+    /// <summary>Return current asset snapshots sorted by currency.</summary>
     public IReadOnlyList<AssetSnapshot> Assets() => _assets.Values.OrderBy(asset => asset.Currency).ToArray();
 
+    /// <summary>Return current open position snapshots sorted by venue/instrument.</summary>
     public IReadOnlyList<Position> Positions() => _positions.Values.OrderBy(position => Key(position.Venue, position.Instrument)).ToArray();
 
+    /// <summary>Return durable state suitable for restart hydration.</summary>
     public SignalsManagerState State() => new(Assets(), Positions());
 
+    /// <summary>Return available cash after applying the asset MaxUsage cap.</summary>
+    /// <param name="currency">Settlement currency code.</param>
     public double AvailableOrderCash(string currency)
     {
         return _assets.TryGetValue(currency.ToUpperInvariant(), out var asset) ? Math.Max(0, asset.Available) * Clamp01(asset.MaxUsage > 0 ? asset.MaxUsage : 1) : 0;
@@ -229,9 +264,57 @@ public sealed class SignalsManager
         WithdrawEvent withdrawal => withdrawal.SubscriptionId,
         _ => 0
     };
-    private static SignalsManagerConfig Normalize(SignalsManagerConfig config) => config with { Venue = NormalizeVenue(config.Venue), Instruments = config.Instruments.Select(NormalizeInstrument).Where(static item => item.Length > 0).Distinct().Order().ToArray(), ProfitWithdrawRatio = Clamp01(config.ProfitWithdrawRatio) };
+    private static SignalsManagerConfig Normalize(SignalsManagerConfig config) => config with { Venue = NormalizeVenue(config.Venue), Instruments = config.Instruments.Select(NormalizeInstrument).Where(static item => item.Length > 0).Distinct().Order().ToArray(), Risk = NormalizeRisk(config.Risk ?? new RiskConfig()), ProfitWithdrawRatio = Clamp01(config.ProfitWithdrawRatio) };
     private static string NormalizeVenue(string venue) => string.IsNullOrWhiteSpace(venue) ? "okx" : venue.Trim().ToLowerInvariant();
     private static string NormalizeInstrument(string instrument) => (instrument ?? string.Empty).Trim().ToUpperInvariant();
     private static string Key(string venue, string instrument) => $"{NormalizeVenue(venue)}:{NormalizeInstrument(instrument)}";
     private static double Clamp01(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 1) : 0;
+    private static RiskConfig NormalizeRisk(RiskConfig risk)
+    {
+        var maxLeverage = Math.Max(0, double.IsFinite(risk.MaxLeverage) ? risk.MaxLeverage : 0);
+        var minLeverage = Math.Max(0, double.IsFinite(risk.MinLeverage) ? risk.MinLeverage : 0);
+        if (maxLeverage > 0 && minLeverage > maxLeverage) minLeverage = maxLeverage;
+        return risk with
+        {
+            MaxMarginRatio = Clamp01(risk.MaxMarginRatio > 0 ? risk.MaxMarginRatio : 1),
+            MinLotHaircutRatio = Math.Max(0, double.IsFinite(risk.MinLotHaircutRatio) ? risk.MinLotHaircutRatio : 0),
+            MaxConcurrentPositions = Math.Max(0, risk.MaxConcurrentPositions),
+            MaxDrawdown = Math.Max(0, double.IsFinite(risk.MaxDrawdown) ? risk.MaxDrawdown : 0),
+            SwitchBuffer = Math.Max(0, double.IsFinite(risk.SwitchBuffer) ? risk.SwitchBuffer : 0),
+            MinLeverage = minLeverage,
+            MaxLeverage = maxLeverage,
+            ProfitWithdrawRatio = Clamp01(risk.ProfitWithdrawRatio)
+        };
+    }
+    private static RuntimeConfig NormalizeRuntime(RuntimeConfig config)
+    {
+        var maxLeverage = Math.Max(0, double.IsFinite(config.MaxLeverage) ? config.MaxLeverage : 0);
+        var minLeverage = Math.Max(0, double.IsFinite(config.MinLeverage) ? config.MinLeverage : 0);
+        if (maxLeverage > 0 && minLeverage > maxLeverage) minLeverage = maxLeverage;
+        return config with
+        {
+            MaxMarginRatio = Clamp01(config.MaxMarginRatio),
+            MinLotHaircutRatio = Math.Max(0, double.IsFinite(config.MinLotHaircutRatio) ? config.MinLotHaircutRatio : 0),
+            MaxConcurrentPositions = Math.Max(0, config.MaxConcurrentPositions),
+            MaxDrawdown = Math.Max(0, double.IsFinite(config.MaxDrawdown) ? config.MaxDrawdown : 0),
+            SwitchBuffer = Math.Max(0, double.IsFinite(config.SwitchBuffer) ? config.SwitchBuffer : 0),
+            MinLeverage = minLeverage,
+            MaxLeverage = maxLeverage,
+            ProfitWithdrawRatio = Clamp01(config.ProfitWithdrawRatio)
+        };
+    }
+    private static RiskConfig ApplyRuntimeConfig(RiskConfig risk, RuntimeConfig config)
+    {
+        return NormalizeRisk(risk with
+        {
+            MaxMarginRatio = config.MaxMarginRatio > 0 ? config.MaxMarginRatio : risk.MaxMarginRatio,
+            MinLotHaircutRatio = config.MinLotHaircutRatio > 0 ? config.MinLotHaircutRatio : risk.MinLotHaircutRatio,
+            MaxConcurrentPositions = config.MaxConcurrentPositions > 0 ? config.MaxConcurrentPositions : risk.MaxConcurrentPositions,
+            MaxDrawdown = config.MaxDrawdown > 0 ? config.MaxDrawdown : risk.MaxDrawdown,
+            SwitchBuffer = config.SwitchBuffer > 0 ? config.SwitchBuffer : risk.SwitchBuffer,
+            MinLeverage = config.MinLeverage > 0 ? config.MinLeverage : risk.MinLeverage,
+            MaxLeverage = config.MaxLeverage > 0 ? config.MaxLeverage : risk.MaxLeverage,
+            ProfitWithdrawRatio = config.ProfitWithdrawRatio
+        });
+    }
 }

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>Grexie.Signals.Client</PackageId>
-    <Version>0.1.21</Version>
+    <Version>0.1.22</Version>
     <Authors>Grexie</Authors>
     <Company>Grexie</Company>
     <Description>Typed .NET client for Grexie Signals websocket subscriptions and router intents.</Description>
