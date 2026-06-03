@@ -9,19 +9,28 @@ namespace Grexie.Signals.Client;
 /// <summary>Authenticates a websocket connection to Grexie Signals.</summary>
 public readonly record struct SignalsWebSocketToken(string Value);
 
-/// <summary>Typed websocket client for Grexie Signals subscriptions.</summary>
+/// <summary>Source of typed Grexie Signals websocket events.</summary>
 public interface ISignalsEventSource
 {
+    /// <summary>Yield typed websocket events until the stream closes or cancellation is requested.</summary>
     IAsyncEnumerable<SignalsEvent> EventsAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>Transport that can open or reopen its websocket connection.</summary>
+public interface ISignalsReconnectableClient
+{
+    /// <summary>Open or reopen the websocket connection.</summary>
+    Task ConnectAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>Typed websocket client for Grexie Signals subscriptions.</summary>
 public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
 {
     private readonly Uri _uri;
     private readonly SignalsWebSocketToken _token;
-    private readonly ClientWebSocket _socket = new();
     private readonly JsonSerializerOptions _json = JsonOptions.Create();
-    private readonly Channel<SignalsEvent> _receiveQueue = Channel.CreateUnbounded<SignalsEvent>();
+    private ClientWebSocket _socket;
+    private Channel<SignalsEvent> _receiveQueue = Channel.CreateUnbounded<SignalsEvent>();
     private readonly List<Channel<SignalsEvent>> _subscribers = new();
     private readonly object _subscriberLock = new();
     private CancellationTokenSource? _readLoopCts;
@@ -42,20 +51,40 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
     {
         _token = token;
         _uri = uri;
-        if (!string.IsNullOrWhiteSpace(token.Value))
-        {
-            _socket.Options.SetRequestHeader("Authorization", $"Bearer {token.Value}");
-        }
+        _socket = CreateSocket();
     }
 
     /// <summary>Open the websocket connection.</summary>
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
+        if (_socket.State == WebSocketState.Open)
+        {
+            return;
+        }
+        _readLoopCts?.Cancel();
+        if (_readLoopTask is not null)
+        {
+            try
+            {
+                await _readLoopTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        _readLoopCts?.Dispose();
+        _socket.Dispose();
+        _socket = CreateSocket();
+        _receiveQueue = Channel.CreateUnbounded<SignalsEvent>();
+        lock (_subscriberLock)
+        {
+            _subscribers.Clear();
+        }
         await _socket.ConnectAsync(_uri, cancellationToken).ConfigureAwait(false);
         _streamsCompleted = false;
         _completionError = null;
         _readLoopCts = new CancellationTokenSource();
-        _readLoopTask = Task.Run(() => ReadLoopAsync(_readLoopCts.Token));
+        _readLoopTask = Task.Run(() => ReadLoopAsync(_socket, _readLoopCts.Token));
     }
 
     /// <summary>Subscribe to one venue/instrument pair.</summary>
@@ -205,9 +234,10 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
     public async ValueTask DisposeAsync()
     {
         _readLoopCts?.Cancel();
-        if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        var socket = _socket;
+        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None).ConfigureAwait(false);
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None).ConfigureAwait(false);
         }
         if (_readLoopTask is not null)
         {
@@ -221,7 +251,7 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
         }
         CompleteStreams();
         _readLoopCts?.Dispose();
-        _socket.Dispose();
+        socket.Dispose();
     }
 
     private Task SendAsync<T>(T payload, CancellationToken cancellationToken)
@@ -269,13 +299,23 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
 
     private static double Clamp01(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 1) : 0;
 
-    private async Task ReadLoopAsync(CancellationToken cancellationToken)
+    private ClientWebSocket CreateSocket()
+    {
+        var socket = new ClientWebSocket();
+        if (!string.IsNullOrWhiteSpace(_token.Value))
+        {
+            socket.Options.SetRequestHeader("Authorization", $"Bearer {_token.Value}");
+        }
+        return socket;
+    }
+
+    private async Task ReadLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
     {
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var ev = await ReceiveFromSocketAsync(cancellationToken).ConfigureAwait(false);
+                var ev = await ReceiveFromSocketAsync(socket, cancellationToken).ConfigureAwait(false);
                 if (ev is null) break;
                 Publish(ev);
             }
@@ -291,7 +331,7 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
         }
     }
 
-    private async Task<SignalsEvent?> ReceiveFromSocketAsync(CancellationToken cancellationToken)
+    private async Task<SignalsEvent?> ReceiveFromSocketAsync(ClientWebSocket socket, CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -300,7 +340,7 @@ public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
             WebSocketReceiveResult result;
             do
             {
-                result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+                result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     return null;

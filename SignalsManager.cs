@@ -49,19 +49,51 @@ public sealed class SignalsManager
     /// <param name="cancellationToken">Cancellation token for the run loop.</param>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        await SubscribeAsync(cancellationToken).ConfigureAwait(false);
+        var backoff = TimeSpan.FromSeconds(1);
         try
         {
-            await foreach (var ev in _client.EventsAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await HandleEventAsync(ev, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (_client is ISignalsReconnectableClient reconnectable)
+                    {
+                        await reconnectable.ConnectAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    _subscriptionId = 0;
+                    await SubscribeAsync(cancellationToken).ConfigureAwait(false);
+                    await foreach (var ev in _client.EventsAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        await HandleEventAsync(ev, cancellationToken).ConfigureAwait(false);
+                    }
+                    if (!CanReconnect() || cancellationToken.IsCancellationRequested) break;
+                    backoff = TimeSpan.FromSeconds(1);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    if (!CanReconnect()) throw;
+                }
+                _subscriptionId = 0;
+                try
+                {
+                    await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
             }
         }
         finally
         {
             if (_subscriptionId > 0)
             {
-                await _client.UnsubscribeAsync(_subscriptionId, cancellationToken).ConfigureAwait(false);
+                await SendLiveAsync(() => _client.UnsubscribeAsync(_subscriptionId, CancellationToken.None)).ConfigureAwait(false);
                 _subscriptionId = 0;
             }
         }
@@ -82,7 +114,7 @@ public sealed class SignalsManager
         var next = RecordAsset(asset);
         if (next is not null && _subscriptionId > 0)
         {
-            await _client.UpdateAssetAsync(_subscriptionId, next, cancellationToken).ConfigureAwait(false);
+            await SendLiveAsync(() => _client.UpdateAssetAsync(_subscriptionId, next, cancellationToken)).ConfigureAwait(false);
         }
     }
 
@@ -94,7 +126,7 @@ public sealed class SignalsManager
         var next = RecordPosition(position);
         if (next is not null && _subscriptionId > 0)
         {
-            await _client.UpdatePositionAsync(_subscriptionId, next, cancellationToken).ConfigureAwait(false);
+            await SendLiveAsync(() => _client.UpdatePositionAsync(_subscriptionId, next, cancellationToken)).ConfigureAwait(false);
         }
     }
 
@@ -106,7 +138,7 @@ public sealed class SignalsManager
         var normalized = NormalizeInstrument(instrument);
         if (string.IsNullOrEmpty(normalized)) return;
         _config = _config with { Instruments = _config.Instruments.Append(normalized).Select(NormalizeInstrument).Where(static item => item.Length > 0).Distinct().Order().ToArray() };
-        if (_subscriptionId > 0) await _client.AddInstrumentAsync(_subscriptionId, normalized, cancellationToken).ConfigureAwait(false);
+        if (_subscriptionId > 0) await SendLiveAsync(() => _client.AddInstrumentAsync(_subscriptionId, normalized, cancellationToken)).ConfigureAwait(false);
     }
 
     /// <summary>Remove an instrument locally and from the live subscription.</summary>
@@ -116,7 +148,7 @@ public sealed class SignalsManager
     {
         var normalized = NormalizeInstrument(instrument);
         _config = _config with { Instruments = _config.Instruments.Where(item => NormalizeInstrument(item) != normalized).ToArray() };
-        if (_subscriptionId > 0) await _client.RemoveInstrumentAsync(_subscriptionId, normalized, cancellationToken).ConfigureAwait(false);
+        if (_subscriptionId > 0) await SendLiveAsync(() => _client.RemoveInstrumentAsync(_subscriptionId, normalized, cancellationToken)).ConfigureAwait(false);
     }
 
     /// <summary>Apply and optionally send a runtime router config patch.</summary>
@@ -126,7 +158,7 @@ public sealed class SignalsManager
     {
         var runtime = NormalizeRuntime(config);
         _config = _config with { Risk = ApplyRuntimeConfig(_config.Risk ?? new RiskConfig(), runtime), ProfitWithdrawRatio = runtime.ProfitWithdrawRatio };
-        if (_subscriptionId > 0) await _client.UpdateConfigAsync(_subscriptionId, runtime, cancellationToken).ConfigureAwait(false);
+        if (_subscriptionId > 0) await SendLiveAsync(() => _client.UpdateConfigAsync(_subscriptionId, runtime, cancellationToken)).ConfigureAwait(false);
     }
 
     /// <summary>Schedule a withdrawal through the live router subscription.</summary>
@@ -148,8 +180,8 @@ public sealed class SignalsManager
         {
             case SubscribedEvent sub when sub.SubscriptionId > 0:
                 _subscriptionId = sub.SubscriptionId;
-                foreach (var asset in Assets()) await _client.UpdateAssetAsync(_subscriptionId, asset, cancellationToken).ConfigureAwait(false);
-                foreach (var position in Positions()) await _client.UpdatePositionAsync(_subscriptionId, position, cancellationToken).ConfigureAwait(false);
+                foreach (var asset in Assets()) await SendLiveAsync(() => _client.UpdateAssetAsync(_subscriptionId, asset, cancellationToken)).ConfigureAwait(false);
+                foreach (var position in Positions()) await SendLiveAsync(() => _client.UpdatePositionAsync(_subscriptionId, position, cancellationToken)).ConfigureAwait(false);
                 break;
             case UnsubscribedEvent unsub when unsub.SubscriptionId == _subscriptionId:
                 _subscriptionId = 0;
@@ -189,6 +221,20 @@ public sealed class SignalsManager
     public double AvailableOrderCash(string currency)
     {
         return _assets.TryGetValue(currency.ToUpperInvariant(), out var asset) ? Math.Max(0, asset.Available) * Clamp01(asset.MaxUsage > 0 ? asset.MaxUsage : 1) : 0;
+    }
+
+    private bool CanReconnect() => _client is ISignalsReconnectableClient;
+
+    private async Task SendLiveAsync(Func<Task> send)
+    {
+        try
+        {
+            await send().ConfigureAwait(false);
+        }
+        catch
+        {
+            if (!CanReconnect()) throw;
+        }
     }
 
     private bool AcceptsEvent(SignalsEvent ev)
