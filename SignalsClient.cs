@@ -15,7 +15,7 @@ public interface ISignalsEventSource
     IAsyncEnumerable<SignalsEvent> EventsAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class SignalsClient : IAsyncDisposable, ISignalsEventSource
+public sealed class SignalsClient : IAsyncDisposable, ISignalsManagerClient
 {
     private readonly Uri _uri;
     private readonly SignalsWebSocketToken _token;

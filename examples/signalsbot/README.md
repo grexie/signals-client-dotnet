@@ -1,28 +1,8 @@
-# .NET Signalsbot Example
+# signalsbot .NET Example
 
-Paper-trading command line bot for Grexie Signals. It subscribes to `SIGNALS_INSTRUMENTS`, reads OKX candle prices, feeds the .NET client `PositionManager`, and persists manager state, orders, and snapshots in a local JSON file database.
-
-## Run
+Minimal router-intent listener for Grexie Signals. It subscribes through `SignalsManager`, logs server-created intents, and leaves venue execution to your own integration.
 
 ```sh
-cd examples/signalsbot
 cp .env.example .env
-$EDITOR .env
-dotnet run -- papertrader
-```
-
-Clean the local database with:
-
-```sh
-dotnet run -- clean
-```
-
-The bot logs position opens, closes with PnL, margin adds/removals, and detailed order sizing. Every five minutes it reports position-manager stats and current PnL.
-
-## Docker
-
-```sh
-cd examples/signalsbot
-cp .env.example .env
-docker compose up --build
+dotnet run
 ```

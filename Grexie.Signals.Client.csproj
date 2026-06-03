@@ -8,12 +8,12 @@
     <Version>0.1.21</Version>
     <Authors>Grexie</Authors>
     <Company>Grexie</Company>
-    <Description>Typed .NET client for Grexie Signals websocket subscriptions and position management.</Description>
+    <Description>Typed .NET client for Grexie Signals websocket subscriptions and router intents.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/grexie/signals-client-dotnet</PackageProjectUrl>
     <RepositoryUrl>https://github.com/grexie/signals-client-dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>grexie;signals;websocket;trading;position-management</PackageTags>
+    <PackageTags>grexie;signals;websocket;trading;router-intents</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="examples/**/*.cs" />
