@@ -55,7 +55,7 @@ while (!cts.IsCancellationRequested)
             Console.WriteLine($"withdraw currency={withdrawal.Currency} amount={withdrawal.Amount}");
             break;
         case InfoEvent info:
-            Console.WriteLine($"info instrument={info.Instrument} stage={info.Stage} message=\"{info.Message}\"");
+            Console.WriteLine($"info level={info.Level} instrument={info.Instrument} stage={info.Stage} message=\"{info.Message}\"");
             break;
     }
 }

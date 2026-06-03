@@ -26,11 +26,16 @@ public sealed class ProtocolTests
     public void ParsesInfoAndErrorEvents()
     {
         var info = Assert.IsType<InfoEvent>(SignalsEventParser.Parse("""
-        {"type":"info","subscriptionId":3,"venue":"okx","instrument":"DOGE-USDT-SWAP","stage":"ready","message":"ready","replay":true,"replayedAt":"2026-05-26T00:00:01Z"}
+        {"type":"info","subscriptionId":3,"venue":"okx","instrument":"DOGE-USDT-SWAP","level":"debug","stage":"ready","message":"ready","replay":true,"replayedAt":"2026-05-26T00:00:01Z"}
         """));
+        Assert.Equal("debug", info.Level);
         Assert.Equal("ready", info.Stage);
         Assert.True(info.Replay);
         Assert.NotNull(info.ReplayedAt);
+        var defaultInfo = Assert.IsType<InfoEvent>(SignalsEventParser.Parse("""
+        {"type":"info","subscriptionId":3,"venue":"okx","instrument":"DOGE-USDT-SWAP","stage":"ready","message":"ready"}
+        """));
+        Assert.Equal("info", defaultInfo.Level);
 
         var backtest = Assert.IsType<BacktestEvent>(SignalsEventParser.Parse("""
         {"type":"backtest","subscriptionId":3,"venue":"okx","instrument":"BASKET:1","timestamp":"2026-05-31T17:00:00Z","backtest":{"accepted":true,"candidate":{"total":0.12}}}

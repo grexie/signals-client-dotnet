@@ -68,7 +68,7 @@ public sealed record SubscribedEvent(long SubscriptionId, string Venue, string I
 public sealed record UnsubscribedEvent(long? SubscriptionId, string? Venue, string? Instrument, string? Code, string? Message) : SignalsEvent("unsubscribed");
 public sealed record BasketUpdatedEvent(long SubscriptionId, string? Venue, string? BasketId, string? Message) : SignalsEvent("basket_updated");
 public sealed record OrderRouterForwardedEvent(long SubscriptionId, string? Venue, string? BasketId, string? Message) : SignalsEvent("order_router_forwarded");
-public sealed record InfoEvent(long SubscriptionId, string Venue, string Instrument, string Stage, string Message, DateTimeOffset? Timestamp, bool Replay, DateTimeOffset? ReplayedAt) : SignalsEvent("info");
+public sealed record InfoEvent(long SubscriptionId, string Venue, string Instrument, string Level, string Stage, string Message, DateTimeOffset? Timestamp, bool Replay, DateTimeOffset? ReplayedAt) : SignalsEvent("info");
 public sealed record BacktestEvent(long SubscriptionId, string Venue, string Instrument, JsonElement Backtest, DateTimeOffset? Timestamp) : SignalsEvent("backtest");
 public sealed record SignalEvent(long SubscriptionId, string Venue, string Instrument, Signal Signal, DateTimeOffset? Timestamp, bool Replay, DateTimeOffset? ReplayedAt) : SignalsEvent("signal");
 public sealed record CreateMarketOrderEvent(long SubscriptionId, string? IntentId, string? Action, string? Reason, string? Venue, string Instrument, string Side, string? OrderType, double ContractSize, double Leverage, bool ReduceOnly, double TakeProfitPrice, double StopLossPrice, double TakeProfit, double StopLoss, DateTimeOffset? Timestamp, double Margin = 0, double Confidence = 0) : SignalsEvent("create-market-order");

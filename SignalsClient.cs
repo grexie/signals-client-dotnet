@@ -363,7 +363,7 @@ public static class SignalsEventParser
             "unsubscribed" => new UnsubscribedEvent(root.GetNullableInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument"), root.GetStringOrNull("code"), root.GetStringOrNull("message")),
             "basket_updated" => new BasketUpdatedEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("basketId"), root.GetStringOrNull("message")),
             "order_router_forwarded" => new OrderRouterForwardedEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("venue"), root.GetStringOrNull("basketId"), root.GetStringOrNull("message")),
-            "info" => new InfoEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, root.GetStringOrNull("stage") ?? string.Empty, root.GetStringOrNull("message") ?? string.Empty, root.GetDateTimeOffsetOrNull("timestamp"), root.GetBoolOrDefault("replay"), root.GetDateTimeOffsetOrNull("replayedAt")),
+            "info" => new InfoEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, NormalizeInfoLevel(root.GetStringOrNull("level")), root.GetStringOrNull("stage") ?? string.Empty, root.GetStringOrNull("message") ?? string.Empty, root.GetDateTimeOffsetOrNull("timestamp"), root.GetBoolOrDefault("replay"), root.GetDateTimeOffsetOrNull("replayedAt")),
             "backtest" => new BacktestEvent(root.GetInt64("subscriptionId"), root.GetString("venue") ?? string.Empty, root.GetString("instrument") ?? string.Empty, root.TryGetProperty("backtest", out var backtest) ? backtest.Clone() : JsonSerializer.Deserialize<JsonElement>("{}"), root.GetDateTimeOffsetOrNull("timestamp")),
             "signal" => ParseSignalEvent(root),
             "create-market-order" => new CreateMarketOrderEvent(root.GetInt64("subscriptionId"), root.GetStringOrNull("intentId"), root.GetStringOrNull("action"), root.GetStringOrNull("reason"), root.GetStringOrNull("venue"), root.GetStringOrNull("instrument") ?? string.Empty, root.GetStringOrNull("side") ?? string.Empty, root.GetStringOrNull("orderType"), root.GetDoubleOrDefault("contractSize"), root.GetDoubleOrDefault("leverage"), root.GetBoolOrDefault("reduceOnly"), root.GetDoubleOrDefault("takeProfitPrice"), root.GetDoubleOrDefault("stopLossPrice"), root.GetDoubleOrDefault("takeProfit"), root.GetDoubleOrDefault("stopLoss"), root.GetDateTimeOffsetOrNull("timestamp"), root.GetDoubleOrDefault("margin"), root.GetDoubleOrDefault("confidence")),
@@ -385,6 +385,17 @@ public static class SignalsEventParser
         {
             return false;
         }
+    }
+
+    private static string NormalizeInfoLevel(string? value)
+    {
+        return value?.Trim().ToLowerInvariant() switch
+        {
+            "error" => "error",
+            "warn" => "warn",
+            "debug" => "debug",
+            _ => "info",
+        };
     }
 
     private static SignalEvent ParseSignalEvent(JsonElement root)
